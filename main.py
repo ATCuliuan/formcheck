@@ -23,7 +23,6 @@ pose = mp_pose.Pose(
 # Active exercise trackers map
 trackers = {
     "squat": SquatTracker(),
-    "push-up": PushupTracker(),
     "pushup": PushupTracker(),
     "lunge": LungeTracker(),
     "plank": PlankTracker()

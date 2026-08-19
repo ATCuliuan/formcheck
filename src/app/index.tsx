@@ -1,10 +1,18 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, Modal, TextInput, FlatList } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+
+// The master list of exercises your app supports
+const AVAILABLE_EXERCISES = ['Squat', 'Push-up', 'Lunge', 'Plank', 'Deadlift', 'Bicep Curl', 'Jumping Jacks'];
 
 export default function App() {
   const [permission, requestPermission] = useCameraPermissions();
   const [selectedExercise, setSelectedExercise] = useState('squat');
+  
+  // New States for the Searchable Dropdown Modal
+  const [isModalVisible, setIsModalVisible] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+
   const [telemetry, setTelemetry] = useState({
     rep_count: 0,
     form_score: 100,
@@ -16,7 +24,7 @@ export default function App() {
   const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
-    const ws = new WebSocket(`ws://10.0.2.2:8000/ws/track/${selectedExercise}`);
+    const ws = new WebSocket(`ws://10.0.2.2:8000/ws/track/${selectedExercise.toLowerCase()}`);
     wsRef.current = ws;
 
     ws.onopen = () => console.log('Connected to Python Backend WebSocket');
@@ -56,25 +64,27 @@ export default function App() {
             quality: 0.3,
             skipProcessing: true,
           });
-
           if (photo?.base64) {
             wsRef.current.send(photo.base64);
           }
-        } catch (err) {
-          // Frame capture pass
-        }
+        } catch (err) {}
       }
     }, 500);
 
     return () => clearInterval(interval);
   }, []);
 
+  // Filter exercises based on search query
+  const filteredExercises = AVAILABLE_EXERCISES.filter(ex => 
+    ex.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
   if (!permission) return <View style={styles.container} />;
   
   if (!permission.granted) {
     return (
       <View style={styles.centerContainer}>
-        <Text style={styles.permissionText}>Camera permission is required for posture tracking.</Text>
+        <Text style={styles.permissionText}>Camera permission is required.</Text>
         <TouchableOpacity style={styles.primaryButton} onPress={requestPermission}>
           <Text style={styles.buttonText}>Grant Permission</Text>
         </TouchableOpacity>
@@ -94,10 +104,8 @@ export default function App() {
 
       {/* Main Camera Viewport */}
       <View style={styles.cameraCard}>
-        {/* Changed to back camera, and removed children from inside it */}
         <CameraView style={styles.camera} ref={cameraRef} facing="back" />
 
-        {/* These UI elements are now floating OVER the camera instead of inside it */}
         <View style={styles.trackingBadge}>
           <Text style={styles.trackingLabel}>NOW TRACKING</Text>
           <Text style={styles.trackingExercise}>
@@ -116,20 +124,19 @@ export default function App() {
         </View>
       </View>
 
-      {/* Exercise Selector Pills */}
-      <View style={styles.selectorRow}>
-        {['Squat', 'Push-up', 'Lunge', 'Plank'].map((item) => (
-          <TouchableOpacity
-            key={item}
-            style={[styles.pillButton, selectedExercise === item.toLowerCase() && styles.activePillButton]}
-            onPress={() => setSelectedExercise(item.toLowerCase())}
-          >
-            <Text style={[styles.pillText, selectedExercise === item.toLowerCase() && styles.activePillText]}>
-              {item}
+      {/* NEW: Searchable Dropdown Button */}
+      <TouchableOpacity 
+        style={styles.dropdownSelector} 
+        onPress={() => setIsModalVisible(true)}
+      >
+        <Text style={styles.dropdownSelectorLabel}>Current Exercise</Text>
+        <View style={styles.dropdownRow}>
+            <Text style={styles.dropdownSelectorText}>
+            {selectedExercise.charAt(0).toUpperCase() + selectedExercise.slice(1)}
             </Text>
-          </TouchableOpacity>
-        ))}
-      </View>
+            <Text style={styles.dropdownIcon}>▼</Text>
+        </View>
+      </TouchableOpacity>
 
       {/* Stats Cards */}
       <View style={styles.statsRow}>
@@ -147,10 +154,57 @@ export default function App() {
         </View>
       </View>
 
-      {/* Action Button */}
       <TouchableOpacity style={styles.actionButton}>
         <Text style={styles.actionButtonText}>▶ Start tracking session</Text>
       </TouchableOpacity>
+
+      {/* NEW: The Modal Popup for Searching Exercises */}
+      <Modal visible={isModalVisible} animationType="slide" transparent={true}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Select Exercise</Text>
+            
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search (e.g. Squat)..."
+              placeholderTextColor="#888"
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+            />
+
+            <FlatList
+              data={filteredExercises}
+              keyExtractor={(item) => item}
+              renderItem={({ item }) => (
+                <TouchableOpacity 
+                  style={styles.modalListItem} 
+                  onPress={() => {
+                    setSelectedExercise(item.toLowerCase());
+                    setIsModalVisible(false);
+                    setSearchQuery(''); // Reset search
+                  }}
+                >
+                  <Text style={styles.modalListItemText}>{item}</Text>
+                </TouchableOpacity>
+              )}
+              ListEmptyComponent={
+                <Text style={styles.emptyListText}>No exercises found.</Text>
+              }
+            />
+
+            <TouchableOpacity 
+              style={styles.closeModalButton} 
+              onPress={() => {
+                setIsModalVisible(false);
+                setSearchQuery('');
+              }}
+            >
+              <Text style={styles.closeModalButtonText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
     </View>
   );
 }
@@ -176,15 +230,29 @@ const styles = StyleSheet.create({
   repCircle: { position: 'absolute', bottom: 15, right: 15, width: 80, height: 80, borderRadius: 40, backgroundColor: 'rgba(0, 0, 0, 0.8)', borderWidth: 3, borderColor: '#E64A19', justifyContent: 'center', alignItems: 'center' },
   repNumber: { color: '#FFF', fontSize: 24, fontWeight: '900' },
   repLabel: { color: '#AAA', fontSize: 10, fontWeight: '700' },
-  selectorRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 15 },
-  pillButton: { paddingVertical: 8, paddingHorizontal: 16, borderRadius: 20, backgroundColor: '#FFF', borderWidth: 1, borderColor: '#DDD' },
-  activePillButton: { backgroundColor: '#1A1A1A', borderColor: '#1A1A1A' },
-  pillText: { fontSize: 13, fontWeight: '600', color: '#555' },
-  activePillText: { color: '#FFF' },
+  
+  // New Dropdown Styles
+  dropdownSelector: { backgroundColor: '#FFF', paddingVertical: 12, paddingHorizontal: 16, borderRadius: 16, marginBottom: 15, borderWidth: 1, borderColor: '#DDD' },
+  dropdownSelectorLabel: { fontSize: 10, fontWeight: '700', color: '#888', marginBottom: 4 },
+  dropdownRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  dropdownSelectorText: { fontSize: 18, fontWeight: '800', color: '#1A1A1A' },
+  dropdownIcon: { fontSize: 16, color: '#1A1A1A' },
+
   statsRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 20 },
   statCard: { flex: 1, backgroundColor: '#FFF', paddingVertical: 14, marginHorizontal: 4, borderRadius: 16, alignItems: 'center', elevation: 1 },
   statNumber: { fontSize: 18, fontWeight: '800', color: '#1A1A1A' },
   statLabel: { fontSize: 10, fontWeight: '700', color: '#888', marginTop: 4 },
   actionButton: { backgroundColor: '#E64A19', paddingVertical: 16, borderRadius: 30, alignItems: 'center' },
-  actionButtonText: { color: '#FFF', fontSize: 16, fontWeight: '800' }
+  actionButtonText: { color: '#FFF', fontSize: 16, fontWeight: '800' },
+
+  // New Modal Styles
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  modalContent: { backgroundColor: '#FFF', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, maxHeight: '80%' },
+  modalTitle: { fontSize: 20, fontWeight: '800', color: '#1A1A1A', marginBottom: 15 },
+  searchInput: { backgroundColor: '#F5F5F5', borderRadius: 12, padding: 12, fontSize: 16, marginBottom: 15, borderWidth: 1, borderColor: '#DDD' },
+  modalListItem: { paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#EEE' },
+  modalListItemText: { fontSize: 16, fontWeight: '600', color: '#333' },
+  emptyListText: { textAlign: 'center', color: '#888', marginTop: 20 },
+  closeModalButton: { marginTop: 20, backgroundColor: '#1A1A1A', paddingVertical: 14, borderRadius: 16, alignItems: 'center' },
+  closeModalButtonText: { color: '#FFF', fontSize: 16, fontWeight: '700' }
 });

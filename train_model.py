@@ -95,5 +95,5 @@ def train_exercise_model(exercise_name):
 
 if __name__ == "__main__":
     # You can change this to "pushup", "lunge", etc., when you have those datasets ready
-    EXERCISE_TO_TRAIN = "pushup"
+    EXERCISE_TO_TRAIN = "squat"
     train_exercise_model(EXERCISE_TO_TRAIN)
