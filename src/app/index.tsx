@@ -8,7 +8,7 @@ const AVAILABLE_EXERCISES = ['Squat', 'Push-up', 'Lunge', 'Plank', 'Deadlift', '
 export default function App() {
   const [permission, requestPermission] = useCameraPermissions();
   const [selectedExercise, setSelectedExercise] = useState('squat');
-  
+  const [isTracking, setIsTracking] = useState(false);
   // New States for the Searchable Dropdown Modal
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -57,11 +57,12 @@ export default function App() {
 
   useEffect(() => {
     const interval = setInterval(async () => {
-      if (cameraRef.current && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      // NEW: Added isTracking check here!
+      if (isTracking && cameraRef.current && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         try {
           const photo = await cameraRef.current.takePictureAsync({
             base64: true,
-            quality: 0.3,
+            quality: 0.8,
             skipProcessing: true,
           });
           if (photo?.base64) {
@@ -71,8 +72,9 @@ export default function App() {
       }
     }, 500);
 
+    // NEW: Added isTracking to this array at the bottom
     return () => clearInterval(interval);
-  }, []);
+  }, [isTracking]);
 
   // Filter exercises based on search query
   const filteredExercises = AVAILABLE_EXERCISES.filter(ex => 
@@ -154,8 +156,13 @@ export default function App() {
         </View>
       </View>
 
-      <TouchableOpacity style={styles.actionButton}>
-        <Text style={styles.actionButtonText}>▶ Start tracking session</Text>
+      <TouchableOpacity 
+        style={[styles.actionButton, isTracking && { backgroundColor: '#B71C1C' }]} 
+        onPress={() => setIsTracking(!isTracking)}
+      >
+        <Text style={styles.actionButtonText}>
+          {isTracking ? '⏹ Stop tracking session' : '▶ Start tracking session'}
+        </Text>
       </TouchableOpacity>
 
       {/* NEW: The Modal Popup for Searching Exercises */}
@@ -219,8 +226,22 @@ const styles = StyleSheet.create({
   brandSubtitle: { fontSize: 12, fontWeight: '700', color: '#888', letterSpacing: 1.5 },
   brandTitle: { fontSize: 26, fontWeight: '900', color: '#1A1A1A' },
   highlightText: { color: '#E64A19' },
-  cameraCard: { height: 320, borderRadius: 24, overflow: 'hidden', backgroundColor: '#1E1E1E', marginBottom: 15, position: 'relative' },
-  camera: { ...StyleSheet.absoluteFillObject },
+  cameraCard: { 
+    height: 320, 
+    width: '100%',
+    borderRadius: 24, 
+    overflow: 'hidden', 
+    backgroundColor: '#1E1E1E', 
+    marginBottom: 15, 
+    position: 'relative' 
+  },
+  camera: { 
+    flex: 1,
+    width: '100%',
+    height: '100%',
+    position: 'absolute',
+    zIndex: -1 
+  },
   trackingBadge: { position: 'absolute', top: 15, left: 15, backgroundColor: 'rgba(0,0,0,0.6)', paddingVertical: 6, paddingHorizontal: 12, borderRadius: 12 },
   trackingLabel: { color: '#AAA', fontSize: 10, fontWeight: '700' },
   trackingExercise: { color: '#FFF', fontSize: 14, fontWeight: 'bold' },
