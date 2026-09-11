@@ -12,11 +12,14 @@ class SquatTracker:
         self.rep_count = 0
         self.depth_reached = False
         
-        # Posture tripwires for Strict Tracking
+        # Posture tripwires
         self.back_posture_maintained = True  
         self.ml_posture_maintained = True  
-        self.knees_caved = False          # NEW: Knee valgus collapse tracking
-        self.is_asymmetrical = False      # NEW: Hip shift/uneven squat tracking
+        self.knees_caved = False          
+        self.is_asymmetrical = False      
+        self.heels_lifted = False         
+        self.descent_frames = 0           
+        self.baseline_ankle_y = None      
         
         # Setup Guards
         self.standing_frames = 0
@@ -47,21 +50,17 @@ class SquatTracker:
             print(f"⚠️ ST-GCN Model not found at {model_path}")
 
     def _extract_body_keypoints(self, landmarks):
-        """Fixes the leg-blindness bug by explicitly grabbing body landmarks instead of the face."""
-        # Grab torso, arms, and legs (ignoring face landmarks 1-10 to fit into 25 joints)
         target_indices = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
         coords = []
         for idx in target_indices:
             lm = landmarks[idx]
             coords.append([lm.x, lm.y, lm.z])
             
-        # Pad the rest with zeros to match the 25-joint ST-GCN input requirement
         while len(coords) < 25:
             coords.append([0.0, 0.0, 0.0])
         return np.array(coords, dtype=np.float32)
 
     def process_frame(self, landmarks):
-        # 1. Grab all critical joints (Left and Right)
         l_hip = landmarks[self.mp_pose.PoseLandmark.LEFT_HIP.value]
         r_hip = landmarks[self.mp_pose.PoseLandmark.RIGHT_HIP.value]
         l_knee = landmarks[self.mp_pose.PoseLandmark.LEFT_KNEE.value]
@@ -70,11 +69,10 @@ class SquatTracker:
         r_ankle = landmarks[self.mp_pose.PoseLandmark.RIGHT_ANKLE.value]
         l_shoulder = landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER.value]
 
-        # 2. Dynamic Profile Tracking & Visibility Guard
         l_vis = sum([l_hip.visibility, l_knee.visibility, l_ankle.visibility, l_shoulder.visibility])
         r_vis = sum([r_hip.visibility, r_knee.visibility, r_ankle.visibility, landmarks[12].visibility])
 
-        if max(l_vis, r_vis) < 2.5: # 4 joints * 0.65 min visibility ~ 2.6
+        if max(l_vis, r_vis) < 2.5: 
             self.depth_reached = False
             self.frame_buffer.clear()
             return {
@@ -86,19 +84,17 @@ class SquatTracker:
                 "knee_angle": 0.0, "hip_angle": 0.0, "depth_reached": False
             }
 
-        # Track the active side for depth math
         active_hip = r_hip if r_vis > l_vis else l_hip
         active_knee = r_knee if r_vis > l_vis else l_knee
         active_ankle = r_ankle if r_vis > l_vis else l_ankle
         active_shoulder = landmarks[12] if r_vis > l_vis else l_shoulder
 
-        # 3. Kinematic Angle Calculations
         knee_angle = calculate_angle(active_hip, active_knee, active_ankle)
         hip_angle = calculate_angle(active_shoulder, active_hip, active_knee)
 
-        # 4. The "Ready Stance" Lock
         if knee_angle > 160:
             self.standing_frames += 1
+            self.baseline_ankle_y = active_ankle.y 
         else:
             self.standing_frames = 0
 
@@ -118,23 +114,27 @@ class SquatTracker:
                 "knee_angle": round(knee_angle, 1), "hip_angle": round(hip_angle, 1), "depth_reached": False
             }
 
-        # 5. NEW: Strict Form Tripwires (Knee Valgus & Hip Shift)
-        # Check if knees cave inward relative to ankle width
+        # 5. Beginner-Friendly Form Tripwires
+        # DANGER (Invalidates Rep)
         knee_distance = abs(l_knee.x - r_knee.x)
         ankle_distance = abs(l_ankle.x - r_ankle.x)
-        if knee_distance < (ankle_distance * 0.65) and self.state in ["DESCENDING", "BOTTOM"]:
+        if knee_distance < (ankle_distance * 0.55) and self.state in ["DESCENDING", "BOTTOM"]:
             self.knees_caved = True
 
-        # Check for hip shift (one side dropping lower than the other)
-        hip_tilt = abs(l_hip.y - r_hip.y)
-        if hip_tilt > 0.06 and self.state in ["DESCENDING", "BOTTOM"]:
-            self.is_asymmetrical = True
-
-        # Check for forward lean (Good Morning)
-        if hip_angle < 50 and self.state != "STANDING":
+        if hip_angle < 45 and self.state != "STANDING":
             self.back_posture_maintained = False
 
-        # 6. Update temporal buffer & Run ST-GCN
+        # WARNINGS (Lowers score but doesn't kill the rep)
+        hip_tilt = abs(l_hip.y - r_hip.y)
+        if hip_tilt > 0.10 and self.state in ["DESCENDING", "BOTTOM"]:
+            self.is_asymmetrical = True
+
+        if self.state == "DESCENDING":
+            self.descent_frames += 1
+            if self.baseline_ankle_y and (self.baseline_ankle_y - active_ankle.y) > 0.05:
+                self.heels_lifted = True
+
+        # 6. ST-GCN Buffer
         frame_coords = self._extract_body_keypoints(landmarks)
         self.frame_buffer.append(frame_coords)
 
@@ -156,53 +156,66 @@ class SquatTracker:
             except Exception:
                 pass
 
-        # 7. State Machine & Strict Rep Gatekeeper
+        # 7. State Machine & Coaching Feedback
         if knee_angle > 155:
             if self.state == "ASCENDING":
-                if self.depth_reached:
-                    # ONLY count if ALL safety tripwires passed
-                    if self.back_posture_maintained and not self.knees_caved and not self.is_asymmetrical and self.ml_posture_maintained:
-                        self.rep_count += 1
-                        self.current_feedback = "Good rep!"
-                    elif not self.back_posture_maintained:
-                        self.current_feedback = "No rep: Chest fell forward"
-                    elif self.knees_caved:
-                        self.current_feedback = "No rep: Knees caved in"
+                if not self.depth_reached:
+                    self.current_feedback = "No rep: Squat lower next time"
+                elif not self.back_posture_maintained:
+                    self.current_feedback = "No rep: Chest fell forward (Danger)"
+                elif self.knees_caved:
+                    self.current_feedback = "No rep: Knees caved in (Danger)"
+                elif not self.ml_posture_maintained:
+                    self.current_feedback = "No rep: AI detected bad posture"
+                else:
+                    # It's a rep! Give coaching tips for sloppy form
+                    self.rep_count += 1
+                    if self.heels_lifted:
+                        self.current_feedback = "Good rep! But keep your heels flat."
                     elif self.is_asymmetrical:
-                        self.current_feedback = "No rep: Hips shifted/Uneven"
+                        self.current_feedback = "Good rep! But watch your hip shift."
+                    elif self.descent_frames < 8:
+                        self.current_feedback = "Good rep! But slow down the drop."
                     else:
-                        self.current_feedback = "No rep: AI detected bad posture"
+                        self.current_feedback = "Perfect rep!"
                 
                 self.depth_reached = False
                 
             self.state = "STANDING"
-            # Reset all tripwires for the next rep
             self.back_posture_maintained = True 
             self.ml_posture_maintained = True 
             self.knees_caved = False
             self.is_asymmetrical = False
+            self.heels_lifted = False
+            self.descent_frames = 0
 
         elif knee_angle <= 140 and self.state in ["STANDING", "DESCENDING"]:
             self.state = "DESCENDING"
-            self.current_feedback = "Going down..."
+            self.current_feedback = "Control the descent..."
 
-            if knee_angle <= 95:
+            if knee_angle <= 110: # Relaxed depth threshold for beginners
                 self.depth_reached = True
                 self.state = "BOTTOM"
-                self.current_feedback = "Depth good — Push up"
+                self.current_feedback = "Depth good — Drive up!"
 
-        elif knee_angle > 100 and self.state in ["BOTTOM", "DESCENDING"]:
+        elif knee_angle > 110 and self.state in ["BOTTOM", "DESCENDING"]:
             if self.depth_reached:
                 self.state = "ASCENDING"
-                self.current_feedback = "Drive through heels!"
+                self.current_feedback = "Drive up!"
             else:
-                self.current_feedback = "Squat lower for full depth"
+                self.current_feedback = "Squat lower..."
 
-        # 8. Punishing Form Score
+        # 8. Adaptive Form Score
+        # Restored the dynamic "ticking" baseline score based on real-time knee angle
         form_score = max(0, min(100, int(100 - abs(knee_angle - 90) * 0.3)))
-        if not self.back_posture_maintained: form_score -= 30
-        if self.knees_caved: form_score -= 20
-        if self.is_asymmetrical: form_score -= 20
+        
+        # Apply the beginner-friendly coaching penalties
+        if not self.back_posture_maintained or self.knees_caved: form_score -= 50
+        if not self.depth_reached and self.state == "ASCENDING": form_score -= 40
+        if self.is_asymmetrical: form_score -= 15
+        if self.heels_lifted: form_score -= 15
+        if self.descent_frames > 0 and self.descent_frames < 8: form_score -= 10
+        
         form_score = max(0, form_score)
 
         return {

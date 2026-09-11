@@ -1,6 +1,6 @@
 import cv2
 import mediapipe as mp
-from exercises.squat import SquatTracker
+from exercises.pushup import PushupTracker
 
 # Initialize MediaPipe drawing tools
 mp_drawing = mp.solutions.drawing_utils
@@ -8,7 +8,7 @@ mp_pose = mp.solutions.pose
 
 def main():
     # Load your backend tracking logic
-    tracker = SquatTracker()
+    tracker = PushupTracker()
     
     # Open the laptop's default webcam (0)
     cap = cv2.VideoCapture(0)

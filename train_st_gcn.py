@@ -5,42 +5,46 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, confusion_matrix
 from st_gcn_model import STGCN
 
 def train_model():
     print("🚀 Booting Form-Tech ST-GCN Training & Validation Pipeline...")
     
-    if not os.path.exists("dataset/train_X.npy"):
+    if not os.path.exists("dataset/train_pushup_X.npy"):
         print("⚠️ Error: Run prepare_fit3d_data.py first to generate datasets!")
         return
         
-    # 1. Load the 40 extracted sequences
-    X_full = np.load("dataset/train_X.npy")
-    y_full = np.load("dataset/train_y.npy")
+    # 1. Load extracted sequences
+    X_full = np.load("dataset/train_pushup_X.npy")
+    y_full = np.load("dataset/train_pushup_y.npy")
     
-    # 2. Perform an 80/20 Train-Test Split
+    # 2. Stratified 80/20 Train-Test Split
     X_train, X_test, y_train, y_test = train_test_split(
-        X_full, y_full, test_size=0.2, random_state=42
+        X_full, y_full, test_size=0.2, random_state=42, stratify=y_full
     )
     
-    print(f"📊 Dataset Split: {len(X_train)} Training sequences | {len(X_test)} Testing sequences")
+    train_counts = np.bincount(y_train, minlength=2)
+    test_counts = np.bincount(y_test, minlength=2)
+    print(f"📊 Training Set: {len(X_train)} samples ({train_counts[0]} Bad, {train_counts[1]} Good)")
+    print(f"📊 Testing Set:  {len(X_test)} samples ({test_counts[0]} Bad, {test_counts[1]} Good)")
 
-    # Convert to PyTorch tensors
+    # PyTorch Tensors
     train_dataset = TensorDataset(torch.tensor(X_train, dtype=torch.float32), torch.tensor(y_train, dtype=torch.long))
     test_dataset = TensorDataset(torch.tensor(X_test, dtype=torch.float32), torch.tensor(y_test, dtype=torch.long))
     
     train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=8, shuffle=False)
 
-    # 3. Initialize Model
+    # 3. Model & Balanced Loss Function
+    class_weights = torch.tensor([len(y_train) / (2.0 * c) for c in train_counts], dtype=torch.float32)
     model = STGCN(num_classes=2)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-    # 4. Training & Validation Loop
-    epochs = 20
+    # 4. Training Loop
+    epochs = 100
     for epoch in range(epochs):
-        # --- TRAINING PHASE ---
         model.train()
         train_correct = 0
         for batch_x, batch_y in train_loader:
@@ -54,23 +58,47 @@ def train_model():
         
         train_acc = 100 * train_correct / len(y_train)
 
-        # --- TESTING PHASE (Unseen Data) ---
+        # Validation Phase
         model.eval()
         test_correct = 0
-        with torch.no_grad(): # Turn off learning so it doesn't cheat
+        with torch.no_grad():
             for batch_x, batch_y in test_loader:
                 outputs = model(batch_x)
                 test_correct += (torch.argmax(outputs, 1) == batch_y).sum().item()
         
-        # Prevent division by zero if test set is too small
-        test_acc = (100 * test_correct / len(y_test)) if len(y_test) > 0 else 0.0
-        
-        print(f"Epoch [{epoch+1}/{epochs}] | Train Acc: {train_acc:.2f}% | Test Acc: {test_acc:.2f}%")
+        test_acc = 100 * test_correct / len(y_test)
+        print(f"Epoch [{epoch+1:02d}/{epochs}] | Train Acc: {train_acc:.2f}% | Test Acc: {test_acc:.2f}%")
 
-    # 5. Save the weights for Form-Tech integration
+    # 5. Save Model
     os.makedirs("models", exist_ok=True)
-    torch.save(model.state_dict(), "models/st_gcn_squat.pt")
-    print("✅ Training & Validation Complete! Engine saved to models/st_gcn_squat.pt")
+    torch.save(model.state_dict(), "models/st_gcn_pushup.pt")
+    print("✅ Training Complete! Engine saved to models/st_gcn_pushup.pt")
+
+    # 6. Evaluation Metrics
+    print("\n" + "="*40)
+    print("📈 FINAL MODEL EVALUATION METRICS")
+    print("="*40)
+    
+    model.eval()
+    all_preds = []
+    all_labels = []
+    with torch.no_grad():
+        for batch_x, batch_y in test_loader:
+            outputs = model(batch_x)
+            preds = torch.argmax(outputs, dim=1)
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(batch_y.cpu().numpy())
+
+    cm = confusion_matrix(all_labels, all_preds, labels=[0, 1])
+    print("\nConfusion Matrix (2x2):")
+    print(cm)
+    print(f"\nTrue Negatives  (Correctly flagged bad form): {cm[0][0]}")
+    print(f"False Positives (Good form flagged as bad):   {cm[0][1]}")
+    print(f"False Negatives (Bad form missed by AI):      {cm[1][0]}")
+    print(f"True Positives  (Correctly flagged good form): {cm[1][1]}")
+
+    print("\nClassification Report:")
+    print(classification_report(all_labels, all_preds, labels=[0, 1], target_names=["Bad Form (0)", "Good Form (1)"], zero_division=0))
 
 if __name__ == "__main__":
     train_model()

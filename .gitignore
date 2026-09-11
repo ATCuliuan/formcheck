@@ -45,3 +45,8 @@ example
 # Ignore raw data and video files
 dataset/
 video_exercises/
+train/
+test/
+dataset/
+models/
+__pycache__/
