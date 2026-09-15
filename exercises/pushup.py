@@ -1,15 +1,15 @@
 import os
 from collections import deque
 import numpy as np
-import torch
+from ai_edge_litert.interpreter import Interpreter
 import mediapipe as mp
 from core.kinematics import calculate_angle
-from st_gcn_model import STGCN
 
 class PushupTracker:
     def __init__(self):
         self.state = "STANDING"   
-        self.rep_count = 0
+        self.good_reps = 0
+        self.bad_reps = 0
         self.depth_reached = False
         
         # Posture tripwires
@@ -27,18 +27,22 @@ class PushupTracker:
         self.sequence_length = 30
         self.frame_buffer = deque(maxlen=self.sequence_length)
         
-        # ST-GCN Init
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = None
-        model_path = os.path.join("models", "st_gcn_pushup.pt")
+        # TensorFlow Lite Init
+        self.interpreter = None
+        model_path = os.path.join("models", "tflite", "st_gcn_pushup.tflite")
 
         if os.path.exists(model_path):
             try:
-                self.model = STGCN(num_classes=2).to(self.device)
-                self.model.load_state_dict(torch.load(model_path, map_location=self.device))
-                self.model.eval()
-            except Exception:
-                self.model = None
+                # MUST have the tflite. prefix right here:
+                self.interpreter = Interpreter(model_path=model_path)
+                
+                self.interpreter.allocate_tensors()
+                self.input_details = self.interpreter.get_input_details()
+                self.output_details = self.interpreter.get_output_details()
+                print("✅ TFLite Engine Loaded Successfully!")
+            except Exception as e:
+                print(f"⚠️ Failed to load TFLite model: {e}")
+                self.interpreter = None
 
     def _extract_body_keypoints(self, landmarks):
         target_indices = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
@@ -75,6 +79,8 @@ class PushupTracker:
         elbow_angle = calculate_angle(active_shoulder, active_elbow, active_wrist)
         body_angle = calculate_angle(active_shoulder, active_hip, active_ankle)
 
+        total_reps = self.good_reps + self.bad_reps
+
         # 1. Orientation Check (Standing vs Horizontal)
         dy = abs(active_ankle.y - active_shoulder.y)
         dx = abs(active_ankle.x - active_shoulder.x)
@@ -89,7 +95,9 @@ class PushupTracker:
             return {
                 "exercise": "Push-Up",
                 "state": self.state,
-                "rep_count": self.rep_count,
+                "good_reps": self.good_reps,
+                "bad_reps": self.bad_reps,
+                "total_reps": total_reps,
                 "form_score": 0,
                 "feedback": "Get down on the floor",
                 "knee_angle": round(elbow_angle, 1),
@@ -107,7 +115,9 @@ class PushupTracker:
             return {
                 "exercise": "Push-Up",
                 "state": self.state,
-                "rep_count": self.rep_count,
+                "good_reps": self.good_reps,
+                "bad_reps": self.bad_reps,
+                "total_reps": total_reps,
                 "form_score": 0,
                 "feedback": "Straighten legs into a plank",
                 "knee_angle": round(elbow_angle, 1),
@@ -129,7 +139,9 @@ class PushupTracker:
             return {
                 "exercise": "Push-Up",
                 "state": "WAITING",
-                "rep_count": self.rep_count,
+                "good_reps": self.good_reps,
+                "bad_reps": self.bad_reps,
+                "total_reps": total_reps,
                 "form_score": 0,
                 "feedback": "Hold plank to start",
                 "knee_angle": round(elbow_angle, 1),
@@ -148,27 +160,41 @@ class PushupTracker:
         frame_coords = self._extract_body_keypoints(landmarks)
         self.frame_buffer.append(frame_coords)
 
-        if self.model and len(self.frame_buffer) == self.sequence_length:
+        if self.interpreter and len(self.frame_buffer) == self.sequence_length:
             try:
-                seq = np.array(self.frame_buffer)
-                tensor_input = torch.tensor(np.transpose(seq, (2, 0, 1)), dtype=torch.float32).unsqueeze(0).to(self.device)
-                with torch.no_grad():
-                    if torch.argmax(self.model(tensor_input), dim=1).item() == 0:
-                        self.ml_posture_maintained = False
-            except Exception:
+                seq = np.array(self.frame_buffer, dtype=np.float32)
+                tensor_input = np.expand_dims(seq, axis=0)
+                
+                self.interpreter.set_tensor(self.input_details[0]['index'], tensor_input)
+                self.interpreter.invoke()
+                output_data = self.interpreter.get_tensor(self.output_details[0]['index'])
+                
+                predicted_class = np.argmax(output_data, axis=1)[0]
+                if predicted_class == 0:
+                    self.ml_posture_maintained = False
+            except Exception as e:
                 pass
 
         # 6. State Machine & Coaching
         if elbow_angle > 150:
             if self.state == "ASCENDING":
+                is_bad_rep = False
+                
                 if not self.depth_reached:
                     self.current_feedback = "No rep: Go lower (bend elbows past 100°)"
+                    is_bad_rep = True
                 elif not self.core_maintained:
                     self.current_feedback = "No rep: Hips sagged"
+                    is_bad_rep = True
                 elif not self.ml_posture_maintained:
                     self.current_feedback = "No rep: AI detected broken plank"
+                    is_bad_rep = True
+                
+                # Update specific counters
+                if is_bad_rep:
+                    self.bad_reps += 1
                 else:
-                    self.rep_count += 1
+                    self.good_reps += 1
                     if self.descent_frames < 6:
                         self.current_feedback = "Good rep! But lower yourself slower."
                     else:
@@ -204,10 +230,14 @@ class PushupTracker:
         if self.descent_frames > 0 and self.descent_frames < 6: form_score -= 15
         form_score = max(0, form_score)
 
+        total_reps = self.good_reps + self.bad_reps
+
         return {
             "exercise": "Push-Up",
             "state": self.state,
-            "rep_count": self.rep_count,
+            "good_reps": self.good_reps,
+            "bad_reps": self.bad_reps,
+            "total_reps": total_reps,
             "form_score": form_score,
             "feedback": self.current_feedback,
             "knee_angle": round(elbow_angle, 1),

@@ -35,17 +35,23 @@ def main():
                 mp_drawing.draw_landmarks(
                     image, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
                 
-                # 2. Run your SquatTracker logic
+                # 2. Run your PushupTracker logic
                 telemetry = tracker.process_frame(results.pose_landmarks.landmark)
                 
-                # 3. Display the backend data on the screen
+                # 3. Display the detailed metrics on the screen
                 cv2.putText(image, f"State: {telemetry['state']}", (10, 30), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
-                cv2.putText(image, f"Reps: {telemetry['rep_count']}", (10, 70), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
-                cv2.putText(image, f"Score: {telemetry['form_score']}%", (10, 110), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2)
-                cv2.putText(image, f"Feedback: {telemetry['feedback']}", (10, 150), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+                
+                cv2.putText(image, f"Total Reps: {telemetry['total_reps']}", (10, 70), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                
+                cv2.putText(image, f"Good: {telemetry['good_reps']} | Bad: {telemetry['bad_reps']}", (10, 110), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                            
+                cv2.putText(image, f"Score: {telemetry['form_score']}%", (10, 150), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+                            
+                cv2.putText(image, f"Feedback: {telemetry['feedback']}", (10, 190), 
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
             
             # Show the live window

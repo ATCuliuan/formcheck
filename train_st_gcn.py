@@ -1,15 +1,12 @@
 import os
 import numpy as np
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import TensorDataset, DataLoader
+import tensorflow as tf
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, confusion_matrix
 from st_gcn_model import STGCN
 
 def train_model():
-    print("🚀 Booting Form-Tech ST-GCN Training & Validation Pipeline...")
+    print("🚀 Booting Form-Tech Native TensorFlow Training & TFLite Pipeline...")
     
     if not os.path.exists("dataset/train_pushup_X.npy"):
         print("⚠️ Error: Run prepare_fit3d_data.py first to generate datasets!")
@@ -29,67 +26,52 @@ def train_model():
     print(f"📊 Training Set: {len(X_train)} samples ({train_counts[0]} Bad, {train_counts[1]} Good)")
     print(f"📊 Testing Set:  {len(X_test)} samples ({test_counts[0]} Bad, {test_counts[1]} Good)")
 
-    # PyTorch Tensors
-    train_dataset = TensorDataset(torch.tensor(X_train, dtype=torch.float32), torch.tensor(y_train, dtype=torch.long))
-    test_dataset = TensorDataset(torch.tensor(X_test, dtype=torch.float32), torch.tensor(y_test, dtype=torch.long))
-    
-    train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=8, shuffle=False)
-
-    # 3. Model & Balanced Loss Function
-    class_weights = torch.tensor([len(y_train) / (2.0 * c) for c in train_counts], dtype=torch.float32)
+    # 3. Model & Balanced Class Weights
     model = STGCN(num_classes=2)
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
+        loss=tf.keras.losses.SparseCategoricalCrossentropy(),
+        metrics=['accuracy']
+    )
+
+    total = len(y_train)
+    class_weight = {
+        0: (1 / train_counts[0]) * (total / 2.0),
+        1: (1 / train_counts[1]) * (total / 2.0)
+    }
 
     # 4. Training Loop
-    epochs = 100
-    for epoch in range(epochs):
-        model.train()
-        train_correct = 0
-        for batch_x, batch_y in train_loader:
-            optimizer.zero_grad()
-            outputs = model(batch_x)
-            loss = criterion(outputs, batch_y)
-            loss.backward()
-            optimizer.step()
-            
-            train_correct += (torch.argmax(outputs, 1) == batch_y).sum().item()
-        
-        train_acc = 100 * train_correct / len(y_train)
+    epochs = 40
+    model.fit(
+        X_train, y_train,
+        validation_data=(X_test, y_test),
+        batch_size=8,
+        epochs=epochs,
+        class_weight=class_weight
+    )
 
-        # Validation Phase
-        model.eval()
-        test_correct = 0
-        with torch.no_grad():
-            for batch_x, batch_y in test_loader:
-                outputs = model(batch_x)
-                test_correct += (torch.argmax(outputs, 1) == batch_y).sum().item()
-        
-        test_acc = 100 * test_correct / len(y_test)
-        print(f"Epoch [{epoch+1:02d}/{epochs}] | Train Acc: {train_acc:.2f}% | Test Acc: {test_acc:.2f}%")
+    # 5. Direct Native TFLite Export (Zero bridges required!)
+    os.makedirs("models/tflite", exist_ok=True)
+    tflite_path = "models/tflite/st_gcn_pushup.tflite"
+    
+    converter = tf.lite.TFLiteConverter.from_keras_model(model)
+    converter.optimizations = [tf.lite.Optimize.DEFAULT]
+    tflite_model = converter.convert()
+    
+    with open(tflite_path, "wb") as f:
+        f.write(tflite_model)
+    
+    print(f"🎉 SUCCESS! Native TFLite model generated directly -> {tflite_path}")
 
-    # 5. Save Model
-    os.makedirs("models", exist_ok=True)
-    torch.save(model.state_dict(), "models/st_gcn_pushup.pt")
-    print("✅ Training Complete! Engine saved to models/st_gcn_pushup.pt")
-
-    # 6. Evaluation Metrics
+    # 6. Final Evaluation Metrics
     print("\n" + "="*40)
     print("📈 FINAL MODEL EVALUATION METRICS")
     print("="*40)
     
-    model.eval()
-    all_preds = []
-    all_labels = []
-    with torch.no_grad():
-        for batch_x, batch_y in test_loader:
-            outputs = model(batch_x)
-            preds = torch.argmax(outputs, dim=1)
-            all_preds.extend(preds.cpu().numpy())
-            all_labels.extend(batch_y.cpu().numpy())
+    y_pred_probs = model.predict(X_test)
+    preds = np.argmax(y_pred_probs, axis=1)
 
-    cm = confusion_matrix(all_labels, all_preds, labels=[0, 1])
+    cm = confusion_matrix(y_test, preds, labels=[0, 1])
     print("\nConfusion Matrix (2x2):")
     print(cm)
     print(f"\nTrue Negatives  (Correctly flagged bad form): {cm[0][0]}")
@@ -98,7 +80,7 @@ def train_model():
     print(f"True Positives  (Correctly flagged good form): {cm[1][1]}")
 
     print("\nClassification Report:")
-    print(classification_report(all_labels, all_preds, labels=[0, 1], target_names=["Bad Form (0)", "Good Form (1)"], zero_division=0))
+    print(classification_report(y_test, preds, labels=[0, 1], target_names=["Bad Form (0)", "Good Form (1)"], zero_division=0))
 
 if __name__ == "__main__":
     train_model()
