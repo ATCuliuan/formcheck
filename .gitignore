@@ -48,5 +48,4 @@ video_exercises/
 train/
 test/
 dataset/
-models/
 __pycache__/
