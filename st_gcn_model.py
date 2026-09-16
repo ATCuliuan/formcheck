@@ -1,5 +1,9 @@
+import os
+os.environ["TF_USE_LEGACY_KERAS"] = "1"
+
 import tensorflow as tf
 from tensorflow.keras import layers, Model
+from tensorflow.keras.initializers import Constant
 import numpy as np
 
 def get_spatial_graph(num_node=25):
@@ -24,7 +28,6 @@ def get_spatial_graph(num_node=25):
     D = np.diag(r_inv)
     A_normalized = D.dot(A)
     
-    # Return as a raw Numpy array instead of a tf.constant
     return A_normalized.astype(np.float32)
 
 class GraphConvolution(layers.Layer):
@@ -34,45 +37,59 @@ class GraphConvolution(layers.Layer):
         self.out_channels = out_channels
         
     def build(self, input_shape):
-        self.conv = layers.Conv2D(self.out_channels, kernel_size=(1, 1), padding='same')
+        self.conv = layers.Conv2D(self.out_channels, kernel_size=(1, 1), padding='same', use_bias=False)
         
-        # Register the matrix as a tracked, non-trainable weight in the Keras layer
         A_numpy = get_spatial_graph(25)
         self.A = self.add_weight(
             name="adjacency_matrix",
             shape=A_numpy.shape,
-            initializer=tf.keras.initializers.Constant(A_numpy),
+            initializer=Constant(A_numpy),
             trainable=False
         )
         super(GraphConvolution, self).build(input_shape)
 
     def call(self, x):
-        # x shape: (Batch, Time, Vertices, Channels)
         x = self.conv(x)
-        # Graph aggregation using adjacency matrix via einsum
         x = tf.einsum('ntvc,vw->ntwc', x, self.A)
         return x
 
 class STGCN(Model):
-    """Native TensorFlow Spatial-Temporal Graph Convolutional Network."""
+    """Upgraded Native TensorFlow Spatial-Temporal Graph Convolutional Network."""
     def __init__(self, num_classes=2, **kwargs):
         super(STGCN, self).__init__(**kwargs)
         
+        # Block 1
         self.spatial_gcn1 = GraphConvolution(32)
-        self.temporal_conv1 = layers.Conv2D(64, kernel_size=(9, 1), padding='same')
+        self.bn1 = layers.BatchNormalization()
+        self.temporal_conv1 = layers.Conv2D(64, kernel_size=(9, 1), padding='same', use_bias=False)
+        self.bn2 = layers.BatchNormalization()
         
+        # Block 2
         self.spatial_gcn2 = GraphConvolution(64)
-        self.temporal_conv2 = layers.Conv2D(128, kernel_size=(9, 1), padding='same')
+        self.bn3 = layers.BatchNormalization()
+        self.temporal_conv2 = layers.Conv2D(128, kernel_size=(9, 1), padding='same', use_bias=False)
+        self.bn4 = layers.BatchNormalization()
         
         self.pool = layers.GlobalAveragePooling2D()
         self.fc = layers.Dense(num_classes, activation='softmax')
 
     def call(self, x):
-        x = tf.nn.relu(self.spatial_gcn1(x))
-        x = tf.nn.relu(self.temporal_conv1(x))
+        # We apply Batch Normalization BEFORE the ReLU activation to prevent dead neurons
+        x = self.spatial_gcn1(x)
+        x = self.bn1(x)
+        x = tf.nn.relu(x)
         
-        x = tf.nn.relu(self.spatial_gcn2(x))
-        x = tf.nn.relu(self.temporal_conv2(x))
+        x = self.temporal_conv1(x)
+        x = self.bn2(x)
+        x = tf.nn.relu(x)
+        
+        x = self.spatial_gcn2(x)
+        x = self.bn3(x)
+        x = tf.nn.relu(x)
+        
+        x = self.temporal_conv2(x)
+        x = self.bn4(x)
+        x = tf.nn.relu(x)
         
         x = self.pool(x)
         out = self.fc(x)
