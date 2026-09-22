@@ -11,7 +11,7 @@ from sklearn.metrics import classification_report, confusion_matrix
 from st_gcn_model import STGCN
 
 # Change this to whatever exercise you are currently training
-EXERCISE = "standing_ab_twists" 
+EXERCISE = "standing_shoulder_scaption" 
 
 def train_model():
     print(f"Booting Form-Tech Native Training Pipeline for: {EXERCISE.upper()}...")
@@ -58,7 +58,7 @@ def train_model():
     }
 
     # Reduced epochs so the model doesn't perfectly memorize the synthetic data
-    epochs = 50 
+    epochs = 200 
     
     history = model.fit(
         X_train, y_train,
