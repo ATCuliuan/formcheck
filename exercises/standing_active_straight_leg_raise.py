@@ -10,27 +10,31 @@ class StandingActiveStraightLegRaiseTracker:
         self.state = "WAITING"   
         self.good_reps = 0
         self.bad_reps = 0
-        self.target_height_reached = False
+        self.half_reps = 0                 # Partial ROM counter
         
-        # Posture Tripwires
-        self.lifted_knee_bent = False     # Did they bend the lifting leg to cheat hamstring flexibility?
-        self.support_knee_bent = False    # Did they bend the standing leg to relieve pelvic tension?
-        self.torso_leaned = False         # Did they lean backward to counter-weight the leg?
-        self.ml_posture_maintained = True # ST-GCN AI flag
+        self.target_height_reached = False # Full ROM (hip <= 110 deg)
+        self.half_height_reached = False   # Half ROM (hip <= 135 deg)
+        self.min_hip_angle = 180.0         # Tracks peak height
+        self.reversal_frames = 0           # Debounce counter
         
-        # Tracking Variables
+        # Posture Tripwires (SIDE / SAGITTAL VIEW)
+        self.lifted_knee_straight = True   # Catches bending lifting leg (hamstring cheat)
+        self.support_knee_straight = True  # Catches bending standing leg
+        self.torso_upright = True          # Catches leaning backward to counter-balance
+        self.controlled_descent = True     # Catches free-falling the leg
+        self.ml_posture_maintained = True 
+        
+        self.prev_hip_angle = None
         self.standing_frames = 0
         self.is_ready = False
-        self.active_leg = None
 
-        self.current_feedback = "Stand tall, feet together to begin"
+        self.current_feedback = "Stand sideways to the camera to begin"
         self.mp_pose = mp.solutions.pose
 
-        # Temporal buffer for ST-GCN
         self.sequence_length = 30
         self.frame_buffer = deque(maxlen=self.sequence_length)
         
-        # Load TFLite model
+        # Load LiteRT model
         self.interpreter = None
         model_path = os.path.join("models", "tflite", "st_gcn_standing_active_straight_leg_raise.tflite")
 
@@ -68,35 +72,38 @@ class StandingActiveStraightLegRaiseTracker:
         l_ankle = landmarks[self.mp_pose.PoseLandmark.LEFT_ANKLE.value]
         r_ankle = landmarks[self.mp_pose.PoseLandmark.RIGHT_ANKLE.value]
 
-        total_vis = sum([l_hip.visibility, r_hip.visibility, l_knee.visibility, r_knee.visibility, l_ankle.visibility, r_ankle.visibility])
-        total_reps = self.good_reps + self.bad_reps
+        # In side view, evaluate tracking based on the dominant profile facing the camera
+        l_vis = sum([l_shoulder.visibility, l_hip.visibility, l_knee.visibility, l_ankle.visibility])
+        r_vis = sum([r_shoulder.visibility, r_hip.visibility, r_knee.visibility, r_ankle.visibility])
 
-        if total_vis < 5.0: 
+        total_reps = self.good_reps + self.bad_reps + self.half_reps
+
+        if max(l_vis, r_vis) < 2.5: 
             self.frame_buffer.clear()
             return {
                 "exercise": "Standing Leg Raise",
                 "state": "WAITING",
                 "good_reps": self.good_reps,
                 "bad_reps": self.bad_reps,
+                "half_reps": self.half_reps,
                 "total_reps": total_reps,
                 "form_score": 0,
-                "feedback": "Step back: Full body not visible",
-                "hip_angle": 0.0, "depth_reached": False
+                "feedback": "Step back: Show full side profile",
+                "hip_angle": 0.0, "knee_angle": 0.0, "depth_reached": False
             }
 
-        # Calculate joint angles
-        # Hip angle determines the height of the leg raise (180 is standing straight, 90 is parallel to floor)
+        # Calculate joint angles for both limbs
         l_hip_angle = calculate_angle(l_shoulder, l_hip, l_knee)
         r_hip_angle = calculate_angle(r_shoulder, r_hip, r_knee)
-        
-        # Knee angles check if the legs are straight
         l_knee_angle = calculate_angle(l_hip, l_knee, l_ankle)
         r_knee_angle = calculate_angle(r_hip, r_knee, r_ankle)
 
-        # Baseline: Both hips open (> 165) and knees straight (> 160)
-        if l_hip_angle > 165 and r_hip_angle > 165 and l_knee_angle > 160 and r_knee_angle > 160:
+        # Baseline: standing tall with both legs extended
+        is_standing_tall = (l_hip_angle > 165 and r_hip_angle > 165 and 
+                            l_knee_angle > 158 and r_knee_angle > 158)
+
+        if is_standing_tall:
             self.standing_frames += 1
-            self.active_leg = None
         else:
             self.standing_frames = 0
 
@@ -111,52 +118,34 @@ class StandingActiveStraightLegRaiseTracker:
                 "state": self.state,
                 "good_reps": self.good_reps,
                 "bad_reps": self.bad_reps,
+                "half_reps": self.half_reps,
                 "total_reps": total_reps,
                 "form_score": 0,
-                "feedback": "Stand tall, legs straight to begin",
-                "hip_angle": round(min(l_hip_angle, r_hip_angle), 1), "depth_reached": False
+                "feedback": "Stand tall sideways, legs locked to begin",
+                "hip_angle": round(min(l_hip_angle, r_hip_angle), 1),
+                "knee_angle": round(min(l_knee_angle, r_knee_angle), 1),
+                "depth_reached": False
             }
 
-        # Dynamically determine the active (lifting) leg
-        # The leg with the significantly smaller hip angle is the one lifting forward
-        if l_hip_angle < r_hip_angle - 15:
-            self.active_leg = "LEFT"
-        elif r_hip_angle < l_hip_angle - 15:
-            self.active_leg = "RIGHT"
-
-        if self.active_leg == "LEFT":
+        # Determine active (lifting) leg vs support leg
+        if l_hip_angle < r_hip_angle - 10:
             active_hip_angle = l_hip_angle
-            support_hip_angle = r_hip_angle
             active_knee_angle = l_knee_angle
             support_knee_angle = r_knee_angle
-        elif self.active_leg == "RIGHT":
+            active_shoulder, active_hip = l_shoulder, l_hip
+        elif r_hip_angle < l_hip_angle - 10:
             active_hip_angle = r_hip_angle
-            support_hip_angle = l_hip_angle
             active_knee_angle = r_knee_angle
             support_knee_angle = l_knee_angle
+            active_shoulder, active_hip = r_shoulder, r_hip
         else:
-            # Default to tracking whichever hip is closing the most
             active_hip_angle = min(l_hip_angle, r_hip_angle)
-            support_hip_angle = max(l_hip_angle, r_hip_angle)
             active_knee_angle = l_knee_angle if l_hip_angle < r_hip_angle else r_knee_angle
             support_knee_angle = r_knee_angle if l_hip_angle < r_hip_angle else l_knee_angle
+            active_shoulder = l_shoulder if l_hip_angle < r_hip_angle else r_shoulder
+            active_hip = l_hip if l_hip_angle < r_hip_angle else r_hip
 
-        # Form Tripwires (Evaluated during the lift)
-        if self.state in ["LIFTING", "PEAK"]:
-            # 1. Hamstring Cheat: Bending the lifting leg
-            if active_knee_angle < 155:
-                self.lifted_knee_bent = True
-                
-            # 2. Support Leg Crutch: Bending the standing leg to drop hips
-            if support_knee_angle < 155:
-                self.support_knee_bent = True
-
-            # 3. Torso Counter-weight: Leaning backward (support hip angle opens up or collapses)
-            # A strict support leg hip angle should stay between 165 and 185
-            if support_hip_angle < 160 or support_hip_angle > 190:
-                self.torso_leaned = True
-
-        # ST-GCN LiteRT Buffer
+        # ST-GCN Buffer
         frame_coords = self._extract_body_keypoints(landmarks)
         self.frame_buffer.append(frame_coords)
 
@@ -175,65 +164,124 @@ class StandingActiveStraightLegRaiseTracker:
             except Exception:
                 pass
 
-        # State Machine
-        if active_hip_angle > 165:
-            if self.state == "LOWERING":
-                is_bad_rep = False
+        # ---------------------------------------------------------
+        # SIDE-VIEW TRIPWIRES
+        # ---------------------------------------------------------
+        if self.state in ["LIFTING", "PEAK"]:
+            # 1. Hamstring Cheat: Lifting knee bends to shorten the lever
+            if active_knee_angle < 152:
+                self.lifted_knee_straight = False
                 
-                if not self.target_height_reached:
-                    self.current_feedback = "No rep: Lift leg higher (aim for waist)"
-                    is_bad_rep = True
-                elif self.lifted_knee_bent:
-                    self.current_feedback = "No rep: Keep lifting leg perfectly straight"
-                    is_bad_rep = True
-                elif self.support_knee_bent:
-                    self.current_feedback = "No rep: Standing leg bent (Lock it out)"
-                    is_bad_rep = True
-                elif self.torso_leaned:
-                    self.current_feedback = "No rep: Leaning torso (Brace your core)"
-                    is_bad_rep = True
-                elif not self.ml_posture_maintained:
-                    self.current_feedback = "No rep: AI detected form breakdown"
-                    is_bad_rep = True
-                
-                if is_bad_rep:
-                    self.bad_reps += 1
-                else:
-                    self.good_reps += 1
-                    self.current_feedback = "Perfect straight leg raise!"
-                
-                # Reset tripwires
-                self.target_height_reached = False
-                self.lifted_knee_bent = False
-                self.support_knee_bent = False
-                self.torso_leaned = False
-                self.ml_posture_maintained = True
-                
+            # 2. Support Knee Cheat: Standing leg buckles
+            if support_knee_angle < 155:
+                self.support_knee_straight = False
+
+            # 3. Torso Counter-balance: Shoulders shift backward past the hip vertical line
+            torso_lean = active_shoulder.x - active_hip.x
+            # Depending on orientation, leaning backward shifts shoulder away from the lift direction
+            if abs(torso_lean) > 0.14:
+                self.torso_upright = False
+
+            self.min_hip_angle = min(self.min_hip_angle, active_hip_angle)
+
+        # ---------------------------------------------------------
+        # STATE MACHINE (With Half-Rep Logic)
+        # ---------------------------------------------------------
+        if self.state == "WAITING" and self.is_ready:
             self.state = "STANDING"
+            self.current_feedback = "Raise leg straight out in front!"
 
-        elif active_hip_angle <= 155 and self.state in ["STANDING", "LOWERING"]:
+        elif self.state in ["STANDING", "LOWERING"] and active_hip_angle <= 155:
             self.state = "LIFTING"
-            self.current_feedback = "Keep both legs straight..."
+            self.min_hip_angle = active_hip_angle
+            self.reversal_frames = 0
+            self.current_feedback = "Keep both legs completely locked..."
 
-            # Target height logic: Aiming for 115 degrees or lower (closer to parallel)
-            if active_hip_angle <= 115:
-                self.target_height_reached = True
-                self.state = "PEAK"
-                self.current_feedback = "Great height — Lower under control!"
+        # Full ROM: Foot reaches waist/hip height (hip angle <= 110 deg)
+        elif self.state == "LIFTING" and active_hip_angle <= 110:
+            self.target_height_reached = True
+            self.half_height_reached = True
+            self.state = "PEAK"
+            self.current_feedback = "Great height! Lower slowly under control."
 
-        elif active_hip_angle > 115 and self.state in ["PEAK", "LIFTING"]:
-            if self.target_height_reached:
+        # Half Rep Reversal: Reached at least 135 deg, then reversed downward by > 8 deg
+        elif self.state == "LIFTING" and active_hip_angle <= 135 and (active_hip_angle - self.min_hip_angle) > 8:
+            self.reversal_frames += 1
+            if self.reversal_frames >= 3:
+                self.half_height_reached = True
                 self.state = "LOWERING"
-                self.current_feedback = "Control the drop..."
-            else:
-                self.current_feedback = "Lift higher..."
+                self.current_feedback = "Half rep: Lowering leg early..."
 
-        # Dynamic Form Score
+        elif self.state == "PEAK" and active_hip_angle > 118:
+            self.state = "LOWERING"
+            self.current_feedback = "Control the descent"
+
+        # Eccentric Free-Fall Detector: Track downward leg speed
+        if self.state == "LOWERING":
+            if self.prev_hip_angle is not None:
+                drop_speed = active_hip_angle - self.prev_hip_angle
+                if drop_speed > 20.0:  # Dropped > 20° in a single frame (~33ms)
+                    self.controlled_descent = False
+            self.prev_hip_angle = active_hip_angle
+        else:
+            self.prev_hip_angle = None
+
+        # Rep Evaluation: Leg returns to bottom vertical alignment
+        if self.state == "LOWERING" and active_hip_angle > 165:
+            is_bad_rep = False
+            
+            # Form Cheats First
+            if not self.lifted_knee_straight:
+                self.current_feedback = "No rep: Do not bend your lifting knee! Lock it straight."
+                is_bad_rep = True
+            elif not self.support_knee_straight:
+                self.current_feedback = "No rep: Standing leg must stay locked out."
+                is_bad_rep = True
+            elif not self.torso_upright:
+                self.current_feedback = "No rep: Do not lean backward to heave the leg up."
+                is_bad_rep = True
+            elif not self.controlled_descent:
+                self.current_feedback = "No rep: Control the negative! Lower the leg slowly."
+                is_bad_rep = True
+            elif not self.ml_posture_maintained:
+                self.current_feedback = "No rep: AI detected collapsed posture."
+                is_bad_rep = True
+            
+            # Rep Quality / ROM Checks
+            if is_bad_rep:
+                self.bad_reps += 1
+            elif self.target_height_reached:
+                self.good_reps += 1
+                self.current_feedback = "Perfect straight leg raise!"
+            elif self.half_height_reached:
+                self.half_reps += 1
+                self.current_feedback = "Counted as Half Rep: Lift your foot all the way to hip level!"
+            else:
+                self.bad_reps += 1
+                self.current_feedback = "No rep: Leg raise was too shallow."
+            
+            # Reset flags for next rep
+            self.state = "STANDING"
+            self.target_height_reached = False
+            self.half_height_reached = False
+            self.min_hip_angle = 180.0
+            self.reversal_frames = 0
+            self.lifted_knee_straight = True
+            self.support_knee_straight = True
+            self.torso_upright = True
+            self.controlled_descent = True
+            self.prev_hip_angle = None
+            self.ml_posture_maintained = True
+            self.frame_buffer.clear()
+
+        # Dynamic Form Scoring
         form_score = max(0, min(100, int(100 - abs(active_hip_angle - 90) * 0.4)))
-        if self.lifted_knee_bent: form_score -= 30
-        if self.support_knee_bent: form_score -= 30
-        if self.torso_leaned: form_score -= 20
-        if not self.target_height_reached and self.state == "LOWERING": form_score -= 30
+        if not self.lifted_knee_straight: form_score -= 30
+        if not self.support_knee_straight: form_score -= 25
+        if not self.torso_upright: form_score -= 25
+        if not self.controlled_descent: form_score -= 20
+        if not self.ml_posture_maintained: form_score -= 30
+        if self.half_height_reached and not self.target_height_reached: form_score -= 15
         form_score = max(0, form_score)
 
         return {
@@ -241,9 +289,11 @@ class StandingActiveStraightLegRaiseTracker:
             "state": self.state,
             "good_reps": self.good_reps,
             "bad_reps": self.bad_reps,
-            "total_reps": self.good_reps + self.bad_reps,
+            "half_reps": self.half_reps,
+            "total_reps": total_reps,
             "form_score": form_score,
             "feedback": self.current_feedback,
             "hip_angle": round(active_hip_angle, 1),
+            "knee_angle": round(active_knee_angle, 1),
             "depth_reached": self.target_height_reached
         }

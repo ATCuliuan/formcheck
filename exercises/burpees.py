@@ -10,15 +10,21 @@ class BurpeesTracker:
         self.state = "WAITING"   
         self.good_reps = 0
         self.bad_reps = 0
+        self.half_reps = 0                 # Counts shallow or partial burpees
         
-        # Posture & Movement Tripwires
+        # Posture & Movement Tripwires (Side View)
         self.plank_reached = False
-        self.core_maintained = True       # NEW: Tracks hip sag in the plank
-        self.ml_posture_maintained = True # Tracks the "lazy hunch" at the top
+        self.half_plank_reached = False    # Catches incomplete kick-backs
+        self.core_maintained = True       # Catches hip sag / banana back
+        self.no_pike = True                # Catches butt shooting up into the air
+        self.jump_finished = False         # Catches skipping the jump/reach at the top
+        self.ml_posture_maintained = True
+        
         self.is_ready = False
         self.standing_frames = 0
+        self.baseline_ankle_y = None       # Tracks floor level for jump height
 
-        self.current_feedback = "Stand upright to begin"
+        self.current_feedback = "Stand sideways to the camera"
         self.mp_pose = mp.solutions.pose
 
         self.sequence_length = 30
@@ -58,18 +64,22 @@ class BurpeesTracker:
         r_ankle = landmarks[self.mp_pose.PoseLandmark.RIGHT_ANKLE.value]
         l_shoulder = landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER.value]
         r_shoulder = landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER.value]
+        l_wrist = landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST.value]
+        r_wrist = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST.value]
 
+        # In side view, one side dominates visibility
         l_vis = sum([l_hip.visibility, l_knee.visibility, l_ankle.visibility, l_shoulder.visibility])
         r_vis = sum([r_hip.visibility, r_knee.visibility, r_ankle.visibility, r_shoulder.visibility])
 
-        total_reps = self.good_reps + self.bad_reps
+        total_reps = self.good_reps + self.bad_reps + self.half_reps
 
         if max(l_vis, r_vis) < 2.5: 
             self.frame_buffer.clear()
             return {
                 "exercise": "Burpees", "state": "WAITING",
-                "good_reps": self.good_reps, "bad_reps": self.bad_reps, "total_reps": total_reps,
-                "form_score": 0, "feedback": "Step back: full body not visible",
+                "good_reps": self.good_reps, "bad_reps": self.bad_reps, 
+                "half_reps": self.half_reps, "total_reps": total_reps,
+                "form_score": 0, "feedback": "Step back: full profile not visible",
                 "knee_angle": 0.0, "hip_angle": 0.0
             }
 
@@ -77,15 +87,15 @@ class BurpeesTracker:
         active_knee = r_knee if r_vis > l_vis else l_knee
         active_ankle = r_ankle if r_vis > l_vis else l_ankle
         active_shoulder = r_shoulder if r_vis > l_vis else l_shoulder
+        active_wrist = r_wrist if r_vis > l_vis else l_wrist
 
-        # Calculate standard angles
+        # Side-view Biomechanical Angles
         knee_angle = calculate_angle(active_hip, active_knee, active_ankle)
         hip_angle = calculate_angle(active_shoulder, active_hip, active_knee)
-        
-        # NEW: The ultimate core-sag detector (Shoulder -> Hip -> Ankle)
         body_angle = calculate_angle(active_shoulder, active_hip, active_ankle)
 
-        if knee_angle > 160 and hip_angle > 150:
+        # 1. Starting Guard (Standing tall sideways)
+        if knee_angle > 160 and hip_angle > 155:
             self.standing_frames += 1
         else:
             self.standing_frames = 0
@@ -98,12 +108,13 @@ class BurpeesTracker:
             self.frame_buffer.clear()
             return {
                 "exercise": "Burpees", "state": self.state,
-                "good_reps": self.good_reps, "bad_reps": self.bad_reps, "total_reps": total_reps,
-                "form_score": 0, "feedback": "Stand upright to begin",
+                "good_reps": self.good_reps, "bad_reps": self.bad_reps, 
+                "half_reps": self.half_reps, "total_reps": total_reps,
+                "form_score": 0, "feedback": "Stand tall sideways to start",
                 "knee_angle": round(knee_angle, 1), "hip_angle": round(hip_angle, 1)
             }
 
-        # ML Buffer
+        # 2. ST-GCN Temporal Buffer Update
         frame_coords = self._extract_body_keypoints(landmarks)
         self.frame_buffer.append(frame_coords)
 
@@ -122,70 +133,119 @@ class BurpeesTracker:
                 pass
 
         # ---------------------------------------------------------
-        # THE INSTRUCTOR-APPROVED STATE MACHINE
+        # SIDE-VIEW GEOMETRY & STATE MACHINE
         # ---------------------------------------------------------
         
-        # Plank Detection: Allow for step-backs by looking at overall body extension and horizontal plane
+        # In a side view:
+        # - Vertical distance between shoulder & ankle collapses when on the floor
+        # - Horizontal body span expands when kicking out into a full plank
         vertical_drop = abs(active_shoulder.y - active_ankle.y)
-        is_horizontal = vertical_drop < 0.45 
+        horizontal_span = abs(active_shoulder.x - active_ankle.x)
         
-        # State Transitions
-        # Allow drop via squat (knee < 120) OR stiff-leg hinge (hip < 100)
-        if self.state == "STANDING" and (knee_angle < 120 or hip_angle < 100):
+        is_horizontal = vertical_drop < 0.28 and horizontal_span > 0.35
+
+        # Initialize to STANDING once ready
+        if self.state == "WAITING" and self.is_ready:
+            self.state = "STANDING"
+            self.baseline_ankle_y = active_ankle.y
+            self.current_feedback = "Drop down into a plank!"
+
+        # Drop: Bending down to plant hands
+        elif self.state == "STANDING" and (knee_angle < 120 or hip_angle < 100):
             self.state = "DROPPING"
-            self.current_feedback = "Drop to the floor!"
-            
-        elif self.state == "DROPPING" and is_horizontal:
+            self.current_feedback = "Kick your legs straight back!"
+
+        # Full Plank reached (horizontal on the floor + flat body line)
+        elif self.state == "DROPPING" and is_horizontal and body_angle >= 150:
             self.state = "PLANK"
             self.plank_reached = True
-            self.current_feedback = "Hold tight, don't let hips sag!"
+            self.half_plank_reached = True
+            self.current_feedback = "Good plank! Jump feet back forward."
 
-        # Core Sag Tripwire: If hips drop while horizontal, invalidate
-        if self.state == "PLANK" and body_angle < 145:
-            self.core_maintained = False
+        # Half Plank branch: Body is down, but hips are heavily bent or knees not kicked back fully
+        elif self.state == "DROPPING" and is_horizontal and body_angle < 150:
+            self.half_plank_reached = True
+            self.state = "PLANK"
+            self.current_feedback = "Half rep: Straighten your legs into a flat plank!"
 
-        # Ascending: Shoulders rise significantly relative to ankles
+        # Side Tripwire: Hip Sag (Hips sit lower on screen than shoulders & ankles)
+        if self.state == "PLANK" and (active_hip.y > active_shoulder.y and active_hip.y > active_ankle.y):
+            if body_angle < 145:
+                self.core_maintained = False
+
+        # Side Tripwire: Pike (Hips peak higher on screen than shoulders & ankles)
+        if self.state == "PLANK" and (active_hip.y < active_shoulder.y and active_hip.y < active_ankle.y):
+            if body_angle < 135:
+                self.no_pike = False
+
+        # Transition: Rising from floor (Torso moves back to vertical)
         elif self.state == "PLANK" and vertical_drop > 0.45:
             self.state = "ASCENDING"
-            self.current_feedback = "Explode up!"
+            self.current_feedback = "Jump up and reach overhead!"
 
-        elif self.state == "ASCENDING" and knee_angle > 155 and hip_angle > 150:
+        # Jump / Extension Verification:
+        # Measures ankle floor lift (> 0.04 screen height) or hands raised above shoulders
+        if self.state in ["ASCENDING", "STANDING"]:
+            jumped = self.baseline_ankle_y is not None and (self.baseline_ankle_y - active_ankle.y) > 0.035
+            arms_up = active_wrist.y < active_shoulder.y
+            if jumped or arms_up:
+                self.jump_finished = True
+
+        # Rep Completion Evaluation
+        elif self.state == "ASCENDING" and knee_angle > 160 and hip_angle > 155:
             is_bad_rep = False
             
-            # Form Evaluation
-            if not self.plank_reached:
-                self.current_feedback = "No rep: You didn't reach a full plank."
+            # Form Cheats First
+            if not self.core_maintained:
+                self.current_feedback = "No rep: Hips sagged to the floor (protect your back)."
                 is_bad_rep = True
-            elif not self.core_maintained:
-                self.current_feedback = "No rep: Hips sagged to the floor (Danger)."
+            elif not self.no_pike:
+                self.current_feedback = "No rep: Butt too high! Flatten into a real plank."
+                is_bad_rep = True
+            elif not self.jump_finished:
+                self.current_feedback = "No rep: Finish with a jump or hands overhead!"
                 is_bad_rep = True
             elif not self.ml_posture_maintained:
                 self.current_feedback = "No rep: Lazy extension at the top."
                 is_bad_rep = True
             
+            # Rep Quality / ROM Evaluation
             if is_bad_rep:
                 self.bad_reps += 1
-            else:
+            elif self.plank_reached:
                 self.good_reps += 1
-                self.current_feedback = "Perfect burpee!"
-            
-            # Reset
+                self.current_feedback = "Great burpee!"
+            elif self.half_plank_reached:
+                self.half_reps += 1
+                self.current_feedback = "Counted as Half Rep: Kick your feet all the way back next time!"
+            else:
+                self.bad_reps += 1
+                self.current_feedback = "No rep: Incomplete kick-back."
+
+            # Reset state for next rep
             self.state = "STANDING"
             self.plank_reached = False
+            self.half_plank_reached = False
             self.core_maintained = True
+            self.no_pike = True
+            self.jump_finished = False
             self.ml_posture_maintained = True
+            self.baseline_ankle_y = active_ankle.y
             self.frame_buffer.clear()
 
-        # Score Engine
+        # Dynamic Scoring
         form_score = 100
-        if not self.plank_reached and self.state == "ASCENDING": form_score -= 50
-        if not self.core_maintained: form_score -= 40
-        if not self.ml_posture_maintained: form_score -= 30
+        if not self.core_maintained: form_score -= 30
+        if not self.no_pike: form_score -= 20
+        if not self.jump_finished: form_score -= 25
+        if not self.ml_posture_maintained: form_score -= 25
+        if self.half_plank_reached and not self.plank_reached: form_score -= 15
         form_score = max(0, form_score)
 
         return {
             "exercise": "Burpees", "state": self.state,
-            "good_reps": self.good_reps, "bad_reps": self.bad_reps, "total_reps": self.good_reps + self.bad_reps,
+            "good_reps": self.good_reps, "bad_reps": self.bad_reps, 
+            "half_reps": self.half_reps, "total_reps": total_reps,
             "form_score": form_score, "feedback": self.current_feedback,
             "knee_angle": round(knee_angle, 1), "hip_angle": round(hip_angle, 1)
         }
