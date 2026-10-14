@@ -14,10 +14,13 @@ class DeadliftTracker:
 
         self.depth_reached = False
         self.half_depth_reached = False
-        self.lowest_wrist_y = 0.0
-        self.reversal_frames = 0
+        self.reversal_during_ascent = False
         
-        # Instructor Tripwires (SAGITTAL / SIDE VIEW)
+        self.prev_hinge_angle = None
+        self.lockout_frames = 0
+        self.ascent_reversal_frames = 0
+        
+        # Biomechanical Tripwires (SAGITTAL / SIDE VIEW)
         self.back_neutral = True
         self.bar_path_close = True
         self.heels_flat = True
@@ -104,10 +107,8 @@ class DeadliftTracker:
         if torso_len == 0:
             torso_len = 0.40
 
-        mid_thigh_y = (active_hip.y + active_knee.y) / 2.0
-
-        # Standing lockout: Knees extended and hands clearly above knee level
-        is_standing = (knee_angle > 142.0) and (active_wrist.y < (active_knee.y - 0.08))
+        # Stable Lockout Check
+        is_standing = (knee_angle > 158.0) and (hip_angle > 155.0) and (active_wrist.y < (active_knee.y - 0.06))
 
         # ---------------------------------------------------------
         # 1. SETUP GUARD
@@ -121,7 +122,7 @@ class DeadliftTracker:
         else:
             self.standing_frames = 0
 
-        if self.standing_frames > 6:
+        if self.standing_frames > 8:
             self.is_ready = True
 
         if not self.is_ready:
@@ -165,7 +166,7 @@ class DeadliftTracker:
             # A. Spinal Flexion / Rounding
             if hip_angle < 50.0:
                 self.back_frames += 1
-                if self.back_frames >= 4:
+                if self.back_frames >= 5:
                     self.back_neutral = False
             else:
                 self.back_frames = max(0, self.back_frames - 1)
@@ -174,7 +175,7 @@ class DeadliftTracker:
             wrist_drift = abs(active_wrist.x - active_ankle.x) / torso_len
             if wrist_drift > 0.65:
                 self.drift_frames += 1
-                if self.drift_frames >= 4:
+                if self.drift_frames >= 5:
                     self.bar_path_close = False
             else:
                 self.drift_frames = max(0, self.drift_frames - 1)
@@ -182,7 +183,7 @@ class DeadliftTracker:
             # C. Heel Lift
             if self.baseline_ankle_y and (self.baseline_ankle_y - active_ankle.y) > 0.045:
                 self.heel_frames += 1
-                if self.heel_frames >= 3:
+                if self.heel_frames >= 4:
                     self.heels_flat = False
             else:
                 self.heel_frames = max(0, self.heel_frames - 1)
@@ -191,104 +192,130 @@ class DeadliftTracker:
             ankle_x_offset = abs(l_ankle.x - r_ankle.x)
             if ankle_x_offset > 0.08:
                 self.foot_align_frames += 1
-                if self.foot_align_frames >= 4:
+                if self.foot_align_frames >= 5:
                     self.feet_aligned = False
             else:
                 self.foot_align_frames = max(0, self.foot_align_frames - 1)
 
-            self.lowest_wrist_y = max(self.lowest_wrist_y, active_wrist.y)
+        # ---------------------------------------------------------
+        # 4. PURE ANGLE-DRIVEN STATE MACHINE
+        # ---------------------------------------------------------
+        hinge_angle = (hip_angle + knee_angle) / 2.0
 
-        # ---------------------------------------------------------
-        # 4. STATE MACHINE (Full vs Half Rep Depth)
-        # ---------------------------------------------------------
+        if self.prev_hinge_angle is None:
+            self.prev_hinge_angle = hinge_angle
+
+        angle_delta = hinge_angle - self.prev_hinge_angle
+        self.prev_hinge_angle = hinge_angle
+
         if self.state == "WAITING" and self.is_ready:
             self.state = "STANDING"
             self.current_feedback = "Hinge hips back, lower past knees"
 
-        # Descending: Hands pass below upper thigh
-        elif self.state in ["STANDING", "ASCENDING"] and active_wrist.y > (active_hip.y + 0.10):
+        # STANDING: Lockout posture
+        elif is_standing and hinge_angle > 155.0:
+            valid_motion = self.depth_reached or self.half_depth_reached or self.reversal_during_ascent
+
+            if self.state in ["ASCENDING", "BOTTOM", "DESCENDING"] and valid_motion:
+                self.lockout_frames += 1
+
+                if self.lockout_frames >= 4:
+                    # ---------------------------------------------------------
+                    # 5. REP COMPLETION
+                    # ---------------------------------------------------------
+                    is_bad_rep = False
+
+                    if not self.back_neutral:
+                        self.current_feedback = "No rep: Back rounded! Keep your spine flat."
+                        is_bad_rep = True
+                    elif not self.feet_aligned:
+                        self.current_feedback = "No rep: Keep feet aligned parallel."
+                        is_bad_rep = True
+                    elif not self.heels_flat:
+                        self.current_feedback = "No rep: Keep heels planted flat on floor."
+                        is_bad_rep = True
+                    elif not self.bar_path_close:
+                        self.current_feedback = "No rep: Keep bar close to your body."
+                        is_bad_rep = True
+                    elif not self.ml_posture_maintained:
+                        self.current_feedback = "No rep: AI flagged spinal curvature."
+                        is_bad_rep = True
+
+                    if is_bad_rep:
+                        self.bad_reps += 1
+                    elif self.reversal_during_ascent:
+                        self.half_reps += 1
+                        self.current_feedback = "Counted as Half Rep: You stopped before completing lockout!"
+                    elif self.half_depth_reached and not self.depth_reached:
+                        self.half_reps += 1
+                        self.current_feedback = "Counted as Half Rep: Lower weights past your knees!"
+                    elif self.depth_reached:
+                        self.good_reps += 1
+                        self.current_feedback = "Great deadlift! Clean rep."
+                    else:
+                        self.bad_reps += 1
+                        self.current_feedback = "No rep: Incomplete movement."
+
+                    # Reset rep tracking flags
+                    self.state = "STANDING"
+                    self.depth_reached = False
+                    self.half_depth_reached = False
+                    self.reversal_during_ascent = False
+                    self.lockout_frames = 0
+                    self.ascent_reversal_frames = 0
+
+                    self.back_frames = 0
+                    self.drift_frames = 0
+                    self.heel_frames = 0
+                    self.foot_align_frames = 0
+                    self.ml_bad_frames = 0
+
+                    self.back_neutral = True
+                    self.bar_path_close = True
+                    self.heels_flat = True
+                    self.feet_aligned = True
+                    self.ml_posture_maintained = True
+                    self.frame_buffer.clear()
+            else:
+                self.state = "STANDING"
+                self.lockout_frames = 0
+                self.current_feedback = "Hinge hips back, lower past knees"
+
+        # DESCENDING: Joints closing / angle decreasing
+        elif angle_delta < -1.2 and hinge_angle < 145.0:
+            self.lockout_frames = 0
+
+            # If moving downwards from ASCENDING before reaching lockout, mark ascent reversal
+            if self.state == "ASCENDING":
+                self.ascent_reversal_frames += 1
+                if self.ascent_reversal_frames >= 3:
+                    self.reversal_during_ascent = True
+                    self.current_feedback = "Reversed during ascent: moving back down..."
+            else:
+                self.ascent_reversal_frames = 0
+
             self.state = "DESCENDING"
-            self.lowest_wrist_y = active_wrist.y
-            self.reversal_frames = 0
             self.current_feedback = "Push hips back, keep bar close..."
 
-        # Full Depth Reached: Hands reach at or below knee level
-        elif self.state == "DESCENDING" and active_wrist.y >= (active_knee.y - 0.02):
+            # Depth evaluated cleanly through hip and knee hinge levels
+            if hinge_angle <= 118.0 or active_wrist.y >= (active_knee.y - 0.01):
+                self.depth_reached = True
+                self.half_depth_reached = True
+            elif hinge_angle <= 134.0:
+                self.half_depth_reached = True
+
+        # BOTTOM: Peak hinge inflection zone
+        elif self.state == "DESCENDING" and (hinge_angle <= 118.0 or active_wrist.y >= (active_knee.y - 0.01)):
+            self.state = "BOTTOM"
             self.depth_reached = True
             self.half_depth_reached = True
-            self.state = "BOTTOM"
             self.current_feedback = "Drive hips forward to stand!"
 
-        # Half Rep Reversal:
-        # Reached the partial zone (past mid-thigh, but above knees), then reversed upward by > 0.035
-        elif (
-            self.state == "DESCENDING"
-            and (mid_thigh_y <= self.lowest_wrist_y < (active_knee.y - 0.02))
-            and (self.lowest_wrist_y - active_wrist.y) > 0.035
-        ):
-            self.reversal_frames += 1
-            if self.reversal_frames >= 3:
-                self.half_depth_reached = True
-                self.state = "ASCENDING"
-                self.current_feedback = "Half rep: Pushing hips up early..."
-
-        # Ascending out of bottom
-        elif self.state == "BOTTOM" and active_wrist.y < (self.lowest_wrist_y - 0.04):
+        # ASCENDING: Joints opening / angle increasing
+        elif angle_delta > 1.2 and hinge_angle < 155.0:
+            self.lockout_frames = 0
             self.state = "ASCENDING"
-            self.current_feedback = "Drive up to lockout!"
-
-        # ---------------------------------------------------------
-        # 5. REP COMPLETION: Return to standing lockout
-        # ---------------------------------------------------------
-        if self.state in ["ASCENDING", "BOTTOM", "DESCENDING"] and (self.depth_reached or self.half_depth_reached) and is_standing:
-            is_bad_rep = False
-
-            if not self.back_neutral:
-                self.current_feedback = "No rep: Back rounded! Keep your spine flat."
-                is_bad_rep = True
-            elif not self.feet_aligned:
-                self.current_feedback = "No rep: Feet are not aligned! Keep both feet parallel and even."
-                is_bad_rep = True
-            elif not self.heels_flat:
-                self.current_feedback = "No rep: Keep your heels planted flat on the floor!"
-                is_bad_rep = True
-            elif not self.bar_path_close:
-                self.current_feedback = "No rep: Keep bar close to your body! Do not let it drift forward."
-                is_bad_rep = True
-            elif not self.ml_posture_maintained:
-                self.current_feedback = "No rep: AI detected poor deadlift mechanics."
-                is_bad_rep = True
-
-            if is_bad_rep:
-                self.bad_reps += 1
-            elif self.depth_reached:
-                self.good_reps += 1
-                self.current_feedback = "Great deadlift! Clean rep."
-            elif self.half_depth_reached:
-                self.half_reps += 1
-                self.current_feedback = "Counted as Half Rep: Lower weights past your knees!"
-            else:
-                self.bad_reps += 1
-                self.current_feedback = "No rep: Movement was too shallow."
-
-            self.state = "STANDING"
-            self.depth_reached = False
-            self.half_depth_reached = False
-            self.lowest_wrist_y = 0.0
-            self.reversal_frames = 0
-
-            self.back_frames = 0
-            self.drift_frames = 0
-            self.heel_frames = 0
-            self.foot_align_frames = 0
-            self.ml_bad_frames = 0
-
-            self.back_neutral = True
-            self.bar_path_close = True
-            self.heels_flat = True
-            self.feet_aligned = True
-            self.ml_posture_maintained = True
-            self.frame_buffer.clear()
+            self.current_feedback = "Drive hips forward to lockout!"
 
         # Dynamic Scoring
         form_score = 100
@@ -297,7 +324,8 @@ class DeadliftTracker:
         if not self.heels_flat: form_score -= 20
         if not self.bar_path_close: form_score -= 20
         if not self.ml_posture_maintained: form_score -= 30
-        if self.half_depth_reached and not self.depth_reached: form_score -= 15
+        if (self.half_depth_reached or self.reversal_during_ascent) and not self.depth_reached:
+            form_score -= 15
         form_score = max(0, form_score)
 
         return {

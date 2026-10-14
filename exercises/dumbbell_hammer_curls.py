@@ -10,12 +10,10 @@ class DumbbellHammerCurlsTracker:
         self.state = "WAITING"   
         self.good_reps = 0
         self.bad_reps = 0
-        self.half_reps = 0                 
+        self.half_reps = 0                 # Preserved for camera test harness compatibility
 
         self.peak_contraction_reached = False  # Full curl (elbow <= 75 deg)
-        self.half_curl_reached = False         # Half curl (elbow <= 105 deg)
         self.min_elbow_angle = 180.0          
-        self.reversal_frames = 0               
 
         # Upper-Body Strict Tripwires (SIDE / SAGITTAL VIEW)
         self.elbow_stayed_down = True          # Catches lifting/swinging upper arm forward or up
@@ -47,7 +45,7 @@ class DumbbellHammerCurlsTracker:
         self.sequence_length = 30
         self.frame_buffer = deque(maxlen=self.sequence_length)
         
-        # Load LiteRT Model for Hammer Curls
+        # Load LiteRT Model
         self.interpreter = None
         model_path = os.path.join("models", "tflite", "st_gcn_dumbbell_hammer_curls.tflite")
 
@@ -101,7 +99,6 @@ class DumbbellHammerCurlsTracker:
                 "bad_reps": self.bad_reps, 
                 "half_reps": self.half_reps,
                 "total_reps": total_reps,
-                "form_score": 0,
                 "feedback": "Show your arm and torso (side view)",
                 "elbow_angle": 0.0
             }
@@ -155,7 +152,6 @@ class DumbbellHammerCurlsTracker:
                 "bad_reps": self.bad_reps,
                 "half_reps": self.half_reps,
                 "total_reps": total_reps,
-                "form_score": 0,
                 "feedback": "Let arm hang down to start",
                 "elbow_angle": round(elbow_angle, 1)
             }
@@ -211,7 +207,7 @@ class DumbbellHammerCurlsTracker:
             self.min_elbow_angle = min(self.min_elbow_angle, elbow_angle)
 
         # ---------------------------------------------------------
-        # 4. STATE MACHINE (Wrist to Chest Flow)
+        # 4. STATE MACHINE (Full Range Enforcement)
         # ---------------------------------------------------------
         if self.state == "WAITING" and self.is_ready:
             self.state = "EXTENDED"
@@ -220,21 +216,18 @@ class DumbbellHammerCurlsTracker:
         elif self.state in ["EXTENDED", "LOWERING"] and elbow_angle < 125:
             self.state = "CURLING"
             self.min_elbow_angle = elbow_angle
-            self.reversal_frames = 0
             self.current_feedback = "Curl up to your chest..."
 
+        # Full contraction reached (elbow <= 75 deg)
         elif self.state == "CURLING" and elbow_angle <= 75:
             self.state = "TOP"
             self.peak_contraction_reached = True
-            self.half_curl_reached = True
             self.current_feedback = "Good squeeze! Lower the weight."
 
-        elif self.state == "CURLING" and (80 <= self.min_elbow_angle <= 95) and (elbow_angle - self.min_elbow_angle) > 8:
-            self.reversal_frames += 1
-            if self.reversal_frames >= 3:
-                self.half_curl_reached = True
-                self.state = "LOWERING"
-                self.current_feedback = "Half rep: Lowering arm early..."
+        # Early return prior to reaching full contraction
+        elif self.state == "CURLING" and (elbow_angle - self.min_elbow_angle) > 8:
+            self.state = "LOWERING"
+            self.current_feedback = "Perform a full rep! Curl all the way to chest."
 
         elif self.state == "TOP" and elbow_angle > 80:
             self.state = "LOWERING"
@@ -253,9 +246,9 @@ class DumbbellHammerCurlsTracker:
             self.prev_elbow_angle = None
 
         # ---------------------------------------------------------
-        # 5. REP COMPLETION
+        # 5. REP COMPLETION & EVALUATION
         # ---------------------------------------------------------
-        if self.state in ["LOWERING", "TOP", "CURLING"] and (self.peak_contraction_reached or self.half_curl_reached) and elbow_angle >= 130:
+        if self.state in ["LOWERING", "TOP", "CURLING"] and elbow_angle >= 130:
             is_bad_rep = False
             
             # Form Cheats First (Invalidates the rep)
@@ -268,36 +261,27 @@ class DumbbellHammerCurlsTracker:
             elif not self.torso_stable:
                 self.current_feedback = "No rep: Do not heave or lean back with your spine."
                 is_bad_rep = True
+            elif not self.peak_contraction_reached:
+                self.current_feedback = "No rep: Perform a full rep! Curl all the way to chest."
+                is_bad_rep = True
             
             # Rep Counting
             if is_bad_rep:
                 self.bad_reps += 1
-            elif self.peak_contraction_reached:
+            else:
                 self.good_reps += 1
+                # Priority advisory messaging
                 if self.knee_bounce_warning:
                     self.current_feedback = "Good rep! Reminder: Keep knees steady, avoid leg drive."
                 elif self.fast_descent_warning:
                     self.current_feedback = "Good rep! Reminder: Lower it slower for better muscle growth."
                 else:
                     self.current_feedback = "Great hammer curl! Clean rep."
-            elif self.half_curl_reached:
-                self.half_reps += 1
-                if self.knee_bounce_warning:
-                    self.current_feedback = "Half Rep! Reminder: Curl to chest and keep knees steady."
-                elif self.fast_descent_warning:
-                    self.current_feedback = "Half Rep! Reminder: Lower it slower & curl to chest."
-                else:
-                    self.current_feedback = "Counted as Half Rep: Curl all the way to chest!"
-            else:
-                self.bad_reps += 1
-                self.current_feedback = "No rep: Movement was too shallow."
             
             # Reset flags for next repetition
             self.state = "EXTENDED"
             self.peak_contraction_reached = False
-            self.half_curl_reached = False
             self.min_elbow_angle = 180.0
-            self.reversal_frames = 0
             
             self.elevation_frames = 0
             self.shrug_frames = 0
@@ -319,22 +303,6 @@ class DumbbellHammerCurlsTracker:
                 
             self.frame_buffer.clear()
 
-        # Dynamic Scoring
-        form_score = max(0, min(100, int(((150 - elbow_angle) / 80) * 100)))
-        if not self.elbow_stayed_down:
-            form_score -= 30
-        if not self.shoulder_not_shrugged:
-            form_score -= 20
-        if not self.torso_stable:
-            form_score -= 20
-        if self.knee_bounce_warning:
-            form_score -= 10
-        if self.fast_descent_warning:
-            form_score -= 8
-        if self.half_curl_reached and not self.peak_contraction_reached:
-            form_score -= 10
-        form_score = max(0, form_score)
-
         return {
             "exercise": "Dumbbell Hammer Curls",
             "state": self.state,
@@ -342,7 +310,6 @@ class DumbbellHammerCurlsTracker:
             "bad_reps": self.bad_reps,
             "half_reps": self.half_reps,
             "total_reps": total_reps,
-            "form_score": form_score,
             "feedback": self.current_feedback,
             "elbow_angle": round(elbow_angle, 1)
         }

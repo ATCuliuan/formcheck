@@ -10,12 +10,10 @@ class OverheadTrapRaiseTracker:
         self.state = "WAITING"   
         self.good_reps = 0
         self.bad_reps = 0
-        self.half_reps = 0
+        self.half_reps = 0                 # Kept for camera test harness compatibility
 
         self.overhead_reached = False
-        self.half_raise_reached = False
         self.max_raise_angle = 0.0
-        self.reversal_frames = 0
         
         # Instructor Tripwires (SAGITTAL / SIDE VIEW)
         self.arms_straight = True
@@ -52,12 +50,8 @@ class OverheadTrapRaiseTracker:
                 self.interpreter.allocate_tensors()
                 self.input_details = self.interpreter.get_input_details()
                 self.output_details = self.interpreter.get_output_details()
-                print(f"ST-GCN TFLite Overhead Trap Raise model loaded from {model_path}")
-            except Exception as e:
-                print(f"Error loading TFLite Overhead Trap Raise weights: {e}")
+            except Exception:
                 self.interpreter = None
-        else:
-            print(f"ST-GCN TFLite model not found at {model_path}")
 
     def _extract_body_keypoints(self, landmarks):
         target_indices = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
@@ -182,7 +176,7 @@ class OverheadTrapRaiseTracker:
             else:
                 self.torso_frames = max(0, self.torso_frames - 1)
 
-            # C. Knee Bounce / Leg-Drive Momentum (Bicep Curl Logic)
+            # C. Knee Bounce / Leg-Drive Momentum
             if self.baseline_knee_angle is not None and self.state == "ASCENDING":
                 knee_deflection = abs(knee_angle - self.baseline_knee_angle)
                 if knee_deflection > 14.0:
@@ -195,7 +189,7 @@ class OverheadTrapRaiseTracker:
             self.max_raise_angle = max(self.max_raise_angle, raise_angle)
 
         # ---------------------------------------------------------
-        # 4. STATE MACHINE (Full Lockout vs Half Rep)
+        # 4. STATE MACHINE (NO HALF REPS - FULL OVERHEAD ONLY)
         # ---------------------------------------------------------
         if self.state == "WAITING" and self.is_ready:
             self.state = "RESTING"
@@ -204,7 +198,6 @@ class OverheadTrapRaiseTracker:
         elif self.state in ["RESTING", "DESCENDING"] and raise_angle > 50:
             self.state = "ASCENDING"
             self.max_raise_angle = raise_angle
-            self.reversal_frames = 0
             self.current_feedback = "Raise arms up overhead..."
 
         elif self.state == "ASCENDING" and raise_angle >= 150:
@@ -212,12 +205,10 @@ class OverheadTrapRaiseTracker:
             self.state = "TOP"
             self.current_feedback = "Squeeze overhead! Control the negative."
 
-        elif self.state == "ASCENDING" and (80 <= self.max_raise_angle < 145) and (self.max_raise_angle - raise_angle) > 8:
-            self.reversal_frames += 1
-            if self.reversal_frames >= 3:
-                self.half_raise_reached = True
-                self.state = "DESCENDING"
-                self.current_feedback = "Half rep: Lowering arms early..."
+        # Early downward reversal before reaching full overhead lockout
+        elif self.state == "ASCENDING" and (self.max_raise_angle - raise_angle) > 8:
+            self.state = "DESCENDING"
+            self.current_feedback = "Perform a full rep! Raise arms completely overhead."
 
         elif self.state == "TOP" and raise_angle < 135:
             self.state = "DESCENDING"
@@ -238,7 +229,7 @@ class OverheadTrapRaiseTracker:
         # ---------------------------------------------------------
         # 5. REP COMPLETION
         # ---------------------------------------------------------
-        if self.state in ["DESCENDING", "TOP", "ASCENDING"] and (self.overhead_reached or self.half_raise_reached) and raise_angle <= 55:
+        if self.state in ["DESCENDING", "TOP", "ASCENDING"] and raise_angle <= 55:
             is_bad_rep = False
             
             # Form Cheats First
@@ -254,32 +245,24 @@ class OverheadTrapRaiseTracker:
             elif not self.ml_posture_maintained:
                 self.current_feedback = "No rep: AI flagged poor posture/mechanics."
                 is_bad_rep = True
+            elif not self.overhead_reached:
+                self.current_feedback = "No rep: Perform a full rep! Raise arms completely overhead."
+                is_bad_rep = True
                 
             # Rep Counting
             if is_bad_rep:
                 self.bad_reps += 1
-            elif self.overhead_reached:
+            else:
                 self.good_reps += 1
                 if self.knee_bounce_warning:
                     self.current_feedback = "Good rep! Reminder: Keep knees steady, avoid leg drive."
                 else:
                     self.current_feedback = "Excellent trap raise! Full overhead range."
-            elif self.half_raise_reached:
-                self.half_reps += 1
-                if self.knee_bounce_warning:
-                    self.current_feedback = "Half Rep! Reminder: Raise fully overhead and keep knees steady."
-                else:
-                    self.current_feedback = "Counted as Half Rep: Raise arms all the way overhead past shoulder height!"
-            else:
-                self.bad_reps += 1
-                self.current_feedback = "No rep: Raise was too shallow to count."
                 
             # Reset flags for next rep
             self.state = "RESTING"
             self.overhead_reached = False
-            self.half_raise_reached = False
             self.max_raise_angle = 0.0
-            self.reversal_frames = 0
             
             self.straight_frames = 0
             self.torso_frames = 0
@@ -301,7 +284,7 @@ class OverheadTrapRaiseTracker:
         if not self.controlled_descent: form_score -= 20
         if self.knee_bounce_warning: form_score -= 10
         if not self.ml_posture_maintained: form_score -= 30
-        if self.half_raise_reached and not self.overhead_reached: form_score -= 15
+        if not self.overhead_reached: form_score -= 20
         form_score = max(0, form_score)
 
         return {
