@@ -10,24 +10,31 @@ class OverheadTrapRaiseTracker:
         self.state = "WAITING"   
         self.good_reps = 0
         self.bad_reps = 0
-        self.half_reps = 0                 # Counts partial ROM raises
+        self.half_reps = 0                 # Kept for camera test harness compatibility
+
+        self.overhead_reached = False
+        self.max_raise_angle = 0.0
         
-        self.overhead_reached = False      # Full ROM (abduction >= 150 deg)
-        self.half_raise_reached = False    # Half ROM (abduction >= 95 deg)
-        self.max_abduction_angle = 0.0     # Tracks peak elevation achieved
-        self.reversal_frames = 0           # Debounce counter for jitter
-        
-        # Instructor Tripwires (FRONT VIEW)
-        self.arms_straight = True          # Catches the "T-Rex" bent-elbow cheat
-        self.torso_upright = True          # Catches lateral side-bending / swaying
-        self.arms_balanced = True          # Catches one arm lagging behind the other
-        self.controlled_descent = True     # Catches dropping arms with zero eccentric control
-        self.ml_posture_maintained = True 
-        
-        self.prev_abduction_angle = None
+        # Instructor Tripwires (SAGITTAL / SIDE VIEW)
+        self.arms_straight = True
+        self.torso_upright = True
+        self.controlled_descent = True
+        self.ml_posture_maintained = True
+
+        # Advisory / Warning Flags
+        self.knee_bounce_warning = False
+        self.baseline_knee_angle = None
+
+        # Debounce counters
+        self.straight_frames = 0
+        self.torso_frames = 0
+        self.knee_frames = 0
+        self.drop_frames = 0
         self.ready_frames = 0
+        
+        self.prev_raise_angle = None
         self.is_ready = False
-        self.current_feedback = "Stand tall facing the camera, arms down"
+        self.current_feedback = "Stand sideways to the camera, arms hanging down"
         self.mp_pose = mp.solutions.pose
 
         self.sequence_length = 30
@@ -43,12 +50,8 @@ class OverheadTrapRaiseTracker:
                 self.interpreter.allocate_tensors()
                 self.input_details = self.interpreter.get_input_details()
                 self.output_details = self.interpreter.get_output_details()
-                print(f"✅ ST-GCN TFLite Overhead Trap Raise model loaded from {model_path}")
-            except Exception as e:
-                print(f"⚠️ Error loading TFLite Overhead Trap Raise weights: {e}")
+            except Exception:
                 self.interpreter = None
-        else:
-            print(f"⚠️ ST-GCN TFLite model not found at {model_path}")
 
     def _extract_body_keypoints(self, landmarks):
         target_indices = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
@@ -61,6 +64,8 @@ class OverheadTrapRaiseTracker:
         return np.array(coords, dtype=np.float32)
 
     def process_frame(self, landmarks):
+        l_ear = landmarks[self.mp_pose.PoseLandmark.LEFT_EAR.value]
+        r_ear = landmarks[self.mp_pose.PoseLandmark.RIGHT_EAR.value]
         l_shoulder = landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER.value]
         r_shoulder = landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER.value]
         l_elbow = landmarks[self.mp_pose.PoseLandmark.LEFT_ELBOW.value]
@@ -69,42 +74,58 @@ class OverheadTrapRaiseTracker:
         r_wrist = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST.value]
         l_hip = landmarks[self.mp_pose.PoseLandmark.LEFT_HIP.value]
         r_hip = landmarks[self.mp_pose.PoseLandmark.RIGHT_HIP.value]
+        l_knee = landmarks[self.mp_pose.PoseLandmark.LEFT_KNEE.value]
+        r_knee = landmarks[self.mp_pose.PoseLandmark.RIGHT_KNEE.value]
+        l_ankle = landmarks[self.mp_pose.PoseLandmark.LEFT_ANKLE.value]
+        r_ankle = landmarks[self.mp_pose.PoseLandmark.RIGHT_ANKLE.value]
 
-        # Bilateral visibility check for front view
-        vis_all = [l_shoulder.visibility, r_shoulder.visibility, l_elbow.visibility, 
-                   r_elbow.visibility, l_wrist.visibility, r_wrist.visibility,
-                   l_hip.visibility, r_hip.visibility]
+        # In side view, determine the active side facing the camera
+        l_vis = sum([l_shoulder.visibility, l_elbow.visibility, l_wrist.visibility, l_hip.visibility])
+        r_vis = sum([r_shoulder.visibility, r_elbow.visibility, r_wrist.visibility, r_hip.visibility])
 
         total_reps = self.good_reps + self.bad_reps + self.half_reps
 
-        if min(vis_all) < 0.35:
+        if max(l_vis, r_vis) < 1.8:
             self.frame_buffer.clear()
             return {
                 "exercise": "Overhead Trap Raise", "state": "WAITING",
                 "good_reps": self.good_reps, "bad_reps": self.bad_reps, 
                 "half_reps": self.half_reps, "total_reps": total_reps,
-                "form_score": 0, "feedback": "Face the camera: show full upper body and arms",
-                "elbow_angle": 0.0, "abduction_angle": 0.0
+                "form_score": 0, "feedback": "Show full side profile of working arm and torso",
+                "elbow_angle": 0.0, "raise_angle": 0.0
             }
 
-        # Bilateral kinematics
-        l_shoulder_abduction = calculate_angle(l_hip, l_shoulder, l_elbow)
-        r_shoulder_abduction = calculate_angle(r_hip, r_shoulder, r_elbow)
-        min_abduction = min(l_shoulder_abduction, r_shoulder_abduction)
-        max_abduction = max(l_shoulder_abduction, r_shoulder_abduction)
+        active_shoulder = r_shoulder if r_vis > l_vis else l_shoulder
+        active_elbow = r_elbow if r_vis > l_vis else l_elbow
+        active_wrist = r_wrist if r_vis > l_vis else l_wrist
+        active_hip = r_hip if r_vis > l_vis else l_hip
+        active_knee = r_knee if r_vis > l_vis else l_knee
+        active_ankle = r_ankle if r_vis > l_vis else l_ankle
 
-        l_elbow_angle = calculate_angle(l_shoulder, l_elbow, l_wrist)
-        r_elbow_angle = calculate_angle(r_shoulder, r_elbow, r_wrist)
-        min_elbow = min(l_elbow_angle, r_elbow_angle)
+        # Sagittal Kinematics
+        raise_angle = calculate_angle(active_hip, active_shoulder, active_elbow)
+        elbow_angle = calculate_angle(active_shoulder, active_elbow, active_wrist)
+        knee_angle = calculate_angle(active_hip, active_knee, active_ankle)
+        
+        # Torso inclination angle off vertical (relative to hips)
+        dx_torso = abs(active_shoulder.x - active_hip.x)
+        dy_torso = abs(active_shoulder.y - active_hip.y)
+        torso_tilt_angle = np.degrees(np.arctan2(dx_torso, dy_torso)) if dy_torso > 0 else 0.0
 
-        # 1. Starting Guard: Arms hanging at sides, elbows extended
-        if min_abduction < 45 and min_elbow > 150:
+        # ---------------------------------------------------------
+        # 1. SETUP GUARD
+        # ---------------------------------------------------------
+        if raise_angle < 50 and elbow_angle > 125:
             self.ready_frames += 1
         else:
             self.ready_frames = 0
 
-        if self.ready_frames > 15: 
+        if self.ready_frames > 6:
             self.is_ready = True
+            if self.baseline_knee_angle is None:
+                self.baseline_knee_angle = knee_angle
+            else:
+                self.baseline_knee_angle = 0.9 * self.baseline_knee_angle + 0.1 * knee_angle
 
         if not self.is_ready:
             self.state = "WAITING"
@@ -113,8 +134,8 @@ class OverheadTrapRaiseTracker:
                 "exercise": "Overhead Trap Raise", "state": self.state,
                 "good_reps": self.good_reps, "bad_reps": self.bad_reps, 
                 "half_reps": self.half_reps, "total_reps": total_reps,
-                "form_score": 0, "feedback": "Let arms hang completely straight to start",
-                "elbow_angle": round(min_elbow, 1), "abduction_angle": round(min_abduction, 1)
+                "form_score": 0, "feedback": "Let arms hang down to start",
+                "elbow_angle": round(elbow_angle, 1), "raise_angle": round(raise_angle, 1)
             }
 
         # 2. ST-GCN Buffer
@@ -132,87 +153,91 @@ class OverheadTrapRaiseTracker:
                 
                 if np.argmax(output_data, axis=1)[0] == 0 and self.state != "RESTING":
                     self.ml_posture_maintained = False
-            except Exception: pass
+            except Exception:
+                pass
 
         # ---------------------------------------------------------
-        # 3. FRONT-VIEW KINEMATIC TRIPWIRES
+        # 3. SIDE-VIEW KINEMATIC TRIPWIRES
         # ---------------------------------------------------------
-        
-        # A. T-Rex Arms: Bending elbows to shorten the lever
-        if min_elbow < 145 and self.state in ["ASCENDING", "TOP"]:
-            self.arms_straight = False
+        if self.state in ["RESTING", "ASCENDING", "TOP", "DESCENDING"]:
+            # A. Excessive Elbow Bend
+            if elbow_angle < 125:
+                self.straight_frames += 1
+                if self.straight_frames >= 6:
+                    self.arms_straight = False
+            else:
+                self.straight_frames = max(0, self.straight_frames - 1)
 
-        # B. Lateral Spine Tilt: Shifting torso left/right off-center
-        mid_shoulder_x = (l_shoulder.x + r_shoulder.x) / 2.0
-        mid_hip_x = (l_hip.x + r_hip.x) / 2.0
-        if abs(mid_shoulder_x - mid_hip_x) > 0.08 and self.state in ["ASCENDING", "TOP"]:
-            self.torso_upright = False
+            # B. Backward Lean / Torso Hyperextension
+            if torso_tilt_angle > 25.0 and self.state in ["ASCENDING", "TOP"]:
+                self.torso_frames += 1
+                if self.torso_frames >= 6:
+                    self.torso_upright = False
+            else:
+                self.torso_frames = max(0, self.torso_frames - 1)
 
-        # C. Bilateral Asymmetry: Arms must rise evenly together
-        wrist_height_diff = abs(l_wrist.y - r_wrist.y)
-        abduction_diff = abs(l_shoulder_abduction - r_shoulder_abduction)
-        if (wrist_height_diff > 0.12 or abduction_diff > 20.0) and self.state in ["ASCENDING", "TOP"]:
-            self.arms_balanced = False
+            # C. Knee Bounce / Leg-Drive Momentum
+            if self.baseline_knee_angle is not None and self.state == "ASCENDING":
+                knee_deflection = abs(knee_angle - self.baseline_knee_angle)
+                if knee_deflection > 14.0:
+                    self.knee_frames += 1
+                    if self.knee_frames >= 3:
+                        self.knee_bounce_warning = True
+                else:
+                    self.knee_frames = max(0, self.knee_frames - 1)
 
-        # Track peak abduction angle reached
-        if self.state in ["ASCENDING", "TOP"]:
-            self.max_abduction_angle = max(self.max_abduction_angle, min_abduction)
+            self.max_raise_angle = max(self.max_raise_angle, raise_angle)
 
         # ---------------------------------------------------------
-        # 4. STATE MACHINE (With Half-Rep Logic)
+        # 4. STATE MACHINE (NO HALF REPS - FULL OVERHEAD ONLY)
         # ---------------------------------------------------------
         if self.state == "WAITING" and self.is_ready:
             self.state = "RESTING"
-            self.current_feedback = "Raise arms overhead in a Y-formation!"
+            self.current_feedback = "Raise arms up overhead!"
 
-        elif self.state in ["RESTING", "DESCENDING"] and min_abduction > 55:
+        elif self.state in ["RESTING", "DESCENDING"] and raise_angle > 50:
             self.state = "ASCENDING"
-            self.max_abduction_angle = min_abduction
-            self.reversal_frames = 0
-            self.current_feedback = "Keep elbows locked, raise straight up..."
+            self.max_raise_angle = raise_angle
+            self.current_feedback = "Raise arms up overhead..."
 
-        # Full Overhead Lockout (Arms elevated >= 150 deg)
-        elif self.state == "ASCENDING" and min_abduction >= 150:
+        elif self.state == "ASCENDING" and raise_angle >= 150:
             self.overhead_reached = True
-            self.half_raise_reached = True
             self.state = "TOP"
-            self.current_feedback = "Squeeze traps overhead! Control the negative."
+            self.current_feedback = "Squeeze overhead! Control the negative."
 
-        # Half Rep Reversal: Reached past parallel (>= 95 deg), but began descending early (> 10 deg drop)
-        elif self.state == "ASCENDING" and min_abduction >= 95 and (self.max_abduction_angle - min_abduction) > 10:
-            self.reversal_frames += 1
-            if self.reversal_frames >= 3:
-                self.half_raise_reached = True
-                self.state = "DESCENDING"
-                self.current_feedback = "Half rep: Lowering arms..."
+        # Early downward reversal before reaching full overhead lockout
+        elif self.state == "ASCENDING" and (self.max_raise_angle - raise_angle) > 8:
+            self.state = "DESCENDING"
+            self.current_feedback = "Perform a full rep! Raise arms completely overhead."
 
-        elif self.state == "TOP" and max_abduction < 135:
+        elif self.state == "TOP" and raise_angle < 135:
             self.state = "DESCENDING"
             self.current_feedback = "Control the descent"
 
-        # D. Eccentric Drop Detector: Monitor rate of lowering
-        if self.state == "DESCENDING":
-            if self.prev_abduction_angle is not None:
-                drop_speed = self.prev_abduction_angle - min_abduction
-                if drop_speed > 22.0:  # Dropped > 22° in a single frame (~33ms)
-                    self.controlled_descent = False
-            self.prev_abduction_angle = min_abduction
+        # Eccentric Free-Fall Monitor
+        if self.state in ["DESCENDING", "ASCENDING"]:
+            if self.prev_raise_angle is not None:
+                drop_speed = self.prev_raise_angle - raise_angle
+                if drop_speed > 28.0:
+                    self.drop_frames += 1
+                    if self.drop_frames >= 2:
+                        self.controlled_descent = False
+            self.prev_raise_angle = raise_angle
         else:
-            self.prev_abduction_angle = None
+            self.prev_raise_angle = None
 
-        # Rep Evaluation: Arms returned down to resting position
-        if self.state == "DESCENDING" and min_abduction <= 50:
+        # ---------------------------------------------------------
+        # 5. REP COMPLETION
+        # ---------------------------------------------------------
+        if self.state in ["DESCENDING", "TOP", "ASCENDING"] and raise_angle <= 55:
             is_bad_rep = False
             
             # Form Cheats First
             if not self.arms_straight:
-                self.current_feedback = "No rep: Keep elbows locked! Do not bend your arms."
+                self.current_feedback = "No rep: Keep arms extended! Do not curl the weights."
                 is_bad_rep = True
             elif not self.torso_upright:
-                self.current_feedback = "No rep: Do not lean sideways to hoist the weights."
-                is_bad_rep = True
-            elif not self.arms_balanced:
-                self.current_feedback = "No rep: Raise both arms evenly! One side lagged behind."
+                self.current_feedback = "No rep: Do not lean backward to heave the weight up."
                 is_bad_rep = True
             elif not self.controlled_descent:
                 self.current_feedback = "No rep: Control the negative! Lower weights slowly."
@@ -220,42 +245,46 @@ class OverheadTrapRaiseTracker:
             elif not self.ml_posture_maintained:
                 self.current_feedback = "No rep: AI flagged poor posture/mechanics."
                 is_bad_rep = True
+            elif not self.overhead_reached:
+                self.current_feedback = "No rep: Perform a full rep! Raise arms completely overhead."
+                is_bad_rep = True
                 
-            # Rep Quality / ROM Checks
+            # Rep Counting
             if is_bad_rep:
                 self.bad_reps += 1
-            elif self.overhead_reached:
-                self.good_reps += 1
-                self.current_feedback = "Excellent trap raise! Full overhead range."
-            elif self.half_raise_reached:
-                self.half_reps += 1
-                self.current_feedback = "Counted as Half Rep: Raise all the way overhead into a Y-shape!"
             else:
-                self.bad_reps += 1
-                self.current_feedback = "No rep: Raise was too shallow to count."
+                self.good_reps += 1
+                if self.knee_bounce_warning:
+                    self.current_feedback = "Good rep! Reminder: Keep knees steady, avoid leg drive."
+                else:
+                    self.current_feedback = "Excellent trap raise! Full overhead range."
                 
             # Reset flags for next rep
             self.state = "RESTING"
             self.overhead_reached = False
-            self.half_raise_reached = False
-            self.max_abduction_angle = 0.0
-            self.reversal_frames = 0
+            self.max_raise_angle = 0.0
+            
+            self.straight_frames = 0
+            self.torso_frames = 0
+            self.knee_frames = 0
+            self.drop_frames = 0
+
             self.arms_straight = True
             self.torso_upright = True
-            self.arms_balanced = True
             self.controlled_descent = True
-            self.prev_abduction_angle = None
+            self.knee_bounce_warning = False
+            self.prev_raise_angle = None
             self.ml_posture_maintained = True
             self.frame_buffer.clear()
 
         # Dynamic Scoring
-        form_score = max(0, min(100, int((min_abduction / 150) * 100)))
-        if not self.arms_straight: form_score -= 30
+        form_score = max(0, min(100, int((raise_angle / 150) * 100)))
+        if not self.arms_straight: form_score -= 25
         if not self.torso_upright: form_score -= 25
-        if not self.arms_balanced: form_score -= 20
         if not self.controlled_descent: form_score -= 20
+        if self.knee_bounce_warning: form_score -= 10
         if not self.ml_posture_maintained: form_score -= 30
-        if self.half_raise_reached and not self.overhead_reached: form_score -= 15
+        if not self.overhead_reached: form_score -= 20
         form_score = max(0, form_score)
 
         return {
@@ -267,6 +296,6 @@ class OverheadTrapRaiseTracker:
             "total_reps": total_reps,
             "form_score": form_score,
             "feedback": self.current_feedback,
-            "elbow_angle": round(min_elbow, 1),
-            "abduction_angle": round(min_abduction, 1)
+            "elbow_angle": round(elbow_angle, 1),
+            "raise_angle": round(raise_angle, 1)
         }

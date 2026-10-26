@@ -10,31 +10,42 @@ class OneArmRowTracker:
         self.state = "WAITING"   
         self.good_reps = 0
         self.bad_reps = 0
-        self.half_reps = 0                 # Partial pull rep counter
-        
+        self.half_reps = 0                 # Kept for camera test harness compatibility
+
         self.pull_reached = False          # Full pull flag (elbow <= 85 deg)
-        self.half_pull_reached = False     # Partial pull flag (elbow <= 115 deg)
-        self.min_elbow_angle = 180.0       # Tracks deepest point of the row
-        self.reversal_frames = 0           # Debounce counter
+        self.min_elbow_angle = 180.0       # Tracks deepest point of the pull
         
         # Instructor Tripwires (STRICT SIDE / SAGITTAL VIEW)
-        self.torso_stable = True           # Catches standing up during the pull
-        self.torso_not_twisted = True      # Catches rotating chest toward the camera (Z-depth)
-        self.neck_neutral = True           # Catches craning the neck up at the mirror
+        self.torso_stable = True           # Catches standing up during pull
+        self.torso_not_twisted = True      # Catches rotating/opening chest upward
+        self.neck_neutral = True           # Catches craning the neck upward
         self.controlled_descent = True     # Catches free-falling the weight
-        self.pull_to_hip = True            # Catches pulling straight up to armpit (bicep row)
-        self.ml_posture_maintained = True  # AI catches lumbar rounding
-        
+        self.pull_to_hip = True            # Catches pulling straight up to armpit (bicep curl row)
+        self.forearm_path_correct = True   # Catches curling wrist inward excessively
+        self.ml_posture_maintained = True  # AI catches lumbar flexion
+
+        # Debounce counters
+        self.drop_frames = 0
+        self.forearm_frames = 0
+        self.twist_frames = 0
+        self.torso_frames = 0
+        self.neck_frames = 0
+        self.trajectory_frames = 0
+        self.ml_bad_frames = 0
+
         self.prev_elbow_angle = None
         self.ready_frames = 0
         self.is_ready = False
-        self.current_feedback = "Lean over bench (side profile to camera) to begin"
+        self.baseline_hip_hinge = None
+        self.baseline_shoulder_separation_x = None
+
+        self.current_feedback = "Hinge forward over bench (side view) to begin"
         self.mp_pose = mp.solutions.pose
 
         self.sequence_length = 30
         self.frame_buffer = deque(maxlen=self.sequence_length)
         
-        # Load Native LiteRT Model
+        # Load LiteRT Model
         self.interpreter = None
         model_path = os.path.join("models", "tflite", "st_gcn_one_arm_row.tflite")
 
@@ -44,12 +55,8 @@ class OneArmRowTracker:
                 self.interpreter.allocate_tensors()
                 self.input_details = self.interpreter.get_input_details()
                 self.output_details = self.interpreter.get_output_details()
-                print(f"✅ ST-GCN TFLite One Arm Row model loaded from {model_path}")
-            except Exception as e:
-                print(f"⚠️ Error loading TFLite One Arm Row weights: {e}")
+            except Exception:
                 self.interpreter = None
-        else:
-            print(f"⚠️ ST-GCN TFLite model not found at {model_path}")
 
     def _extract_body_keypoints(self, landmarks):
         target_indices = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
@@ -75,23 +82,24 @@ class OneArmRowTracker:
         l_knee = landmarks[self.mp_pose.PoseLandmark.LEFT_KNEE.value]
         r_knee = landmarks[self.mp_pose.PoseLandmark.RIGHT_KNEE.value]
 
-        # In side view, the active/working arm is the one facing the camera
         l_vis = sum([l_shoulder.visibility, l_elbow.visibility, l_wrist.visibility, l_hip.visibility])
         r_vis = sum([r_shoulder.visibility, r_elbow.visibility, r_wrist.visibility, r_hip.visibility])
-
         total_reps = self.good_reps + self.bad_reps + self.half_reps
 
-        if max(l_vis, r_vis) < 2.8:
+        if max(l_vis, r_vis) < 1.8:
             self.frame_buffer.clear()
             return {
-                "exercise": "One Arm Row", "state": "WAITING",
-                "good_reps": self.good_reps, "bad_reps": self.bad_reps, 
-                "half_reps": self.half_reps, "total_reps": total_reps,
-                "form_score": 0, "feedback": "Show full side profile of working arm",
-                "elbow_angle": 0.0, "hip_angle": 0.0
+                "exercise": "One Arm Row",
+                "state": "WAITING",
+                "good_reps": self.good_reps,
+                "bad_reps": self.bad_reps,
+                "half_reps": self.half_reps,
+                "total_reps": total_reps,
+                "feedback": "Show full side profile of working arm",
+                "elbow_angle": 0.0,
+                "hip_angle": 0.0
             }
 
-        # Active side is closest to camera
         active_ear = r_ear if r_vis > l_vis else l_ear
         active_shoulder = r_shoulder if r_vis > l_vis else l_shoulder
         active_elbow = r_elbow if r_vis > l_vis else l_elbow
@@ -100,183 +108,243 @@ class OneArmRowTracker:
         active_knee = r_knee if r_vis > l_vis else l_knee
         support_shoulder = l_shoulder if r_vis > l_vis else r_shoulder
 
-        # Sagittal Biomechanical Angles
         elbow_angle = calculate_angle(active_shoulder, active_elbow, active_wrist)
         hip_hinge = calculate_angle(active_shoulder, active_hip, active_knee)
         neck_angle = calculate_angle(active_ear, active_shoulder, active_hip)
 
-        # 1. Starting Guard: Arm straight down, back flat and hinged (< 135 deg)
-        if elbow_angle > 150 and hip_hinge < 135:
+        torso_len = abs(active_shoulder.y - active_hip.y)
+        if torso_len == 0:
+            torso_len = 0.40
+
+        dx_forearm = abs(active_wrist.x - active_elbow.x)
+        dy_forearm = abs(active_wrist.y - active_elbow.y)
+        forearm_tilt = np.degrees(np.arctan2(dx_forearm, dy_forearm)) if dy_forearm > 0 else 90.0
+
+        shoulder_sep_x = abs(active_shoulder.x - support_shoulder.x) / torso_len
+
+        # ---------------------------------------------------------
+        # 1. SETUP GUARD
+        # ---------------------------------------------------------
+        if elbow_angle > 128 and hip_hinge < 145:
             self.ready_frames += 1
+            if self.baseline_hip_hinge is None:
+                self.baseline_hip_hinge = hip_hinge
+            else:
+                self.baseline_hip_hinge = 0.9 * self.baseline_hip_hinge + 0.1 * hip_hinge
+
+            if self.baseline_shoulder_separation_x is None:
+                self.baseline_shoulder_separation_x = shoulder_sep_x
+            else:
+                self.baseline_shoulder_separation_x = 0.9 * self.baseline_shoulder_separation_x + 0.1 * shoulder_sep_x
         else:
             self.ready_frames = 0
 
-        if self.ready_frames > 15: 
+        if self.ready_frames > 5:  
             self.is_ready = True
 
         if not self.is_ready:
             self.state = "WAITING"
             self.frame_buffer.clear()
             return {
-                "exercise": "One Arm Row", "state": self.state,
-                "good_reps": self.good_reps, "bad_reps": self.bad_reps, 
-                "half_reps": self.half_reps, "total_reps": total_reps,
-                "form_score": 0, "feedback": "Hinge forward flat and hang arm straight down",
-                "elbow_angle": round(elbow_angle, 1), "hip_angle": round(hip_hinge, 1)
+                "exercise": "One Arm Row",
+                "state": self.state,
+                "good_reps": self.good_reps,
+                "bad_reps": self.bad_reps,
+                "half_reps": self.half_reps,
+                "total_reps": total_reps,
+                "feedback": "Hinge forward over bench and hang arm down",
+                "elbow_angle": round(elbow_angle, 1),
+                "hip_angle": round(hip_hinge, 1)
             }
 
-        # 2. ST-GCN Buffer
+        # ---------------------------------------------------------
+        # 2. ST-GCN BUFFER & INFERENCE
+        # ---------------------------------------------------------
         frame_coords = self._extract_body_keypoints(landmarks)
         self.frame_buffer.append(frame_coords)
 
         if self.interpreter and len(self.frame_buffer) == self.sequence_length:
             try:
-                seq = np.array(self.frame_buffer, dtype=np.float32)
-                tensor_input = np.expand_dims(seq, axis=0)
-                
-                self.interpreter.set_tensor(self.input_details[0]['index'], tensor_input)
+                seq = np.expand_dims(np.array(self.frame_buffer, dtype=np.float32), axis=0)
+                self.interpreter.set_tensor(self.input_details[0]['index'], seq)
                 self.interpreter.invoke()
-                output_data = self.interpreter.get_tensor(self.output_details[0]['index'])
-                
-                if np.argmax(output_data, axis=1)[0] == 0 and self.state != "EXTENDED":
-                    self.ml_posture_maintained = False
-            except Exception: pass
+                output_data = self.interpreter.get_tensor(self.output_details[0]['index'])[0]
+
+                exp_vals = np.exp(output_data - np.max(output_data))
+                probs = exp_vals / np.sum(exp_vals)
+
+                if probs[0] > 0.85 and self.state in ["PULLING", "TOP"]:
+                    self.ml_bad_frames += 1
+                    if self.ml_bad_frames >= 4:
+                        self.ml_posture_maintained = False
+                else:
+                    self.ml_bad_frames = max(0, self.ml_bad_frames - 1)
+            except Exception:
+                pass
 
         # ---------------------------------------------------------
-        # 3. SIDE-VIEW KINEMATIC TRIPWIRES
+        # 3. KINEMATIC TRIPWIRES
         # ---------------------------------------------------------
-        
-        # A. Ego Yank: Standing up or opening hip hinge during pull
-        if hip_hinge > 140 and self.state in ["PULLING", "TOP"]:
-            self.torso_stable = False
+        if self.state in ["EXTENDED", "PULLING", "TOP", "LOWERING"]:
+            # A. Standing Up Check
+            standing_up_detected = False
+            if self.baseline_hip_hinge is not None:
+                if (hip_hinge - self.baseline_hip_hinge) > 22.0 or hip_hinge > 152.0:
+                    standing_up_detected = True
+            elif hip_hinge > 152.0:
+                standing_up_detected = True
 
-        # B. Lawnmower Chest Twist: Uses MediaPipe Z-depth from side view
-        # When chest twists open toward the camera, shoulder depth difference spikes
-        shoulder_depth_drift = abs(active_shoulder.z - support_shoulder.z)
-        if shoulder_depth_drift > 0.28 and self.state in ["PULLING", "TOP"]:
-            self.torso_not_twisted = False
+            if standing_up_detected:
+                self.torso_frames += 1
+                if self.torso_frames >= 4:
+                    self.torso_stable = False
+            else:
+                self.torso_frames = max(0, self.torso_frames - 1)
 
-        # C. Cervical Hyperextension: Craning neck up to stare into mirror
-        if neck_angle < 130 and self.state in ["PULLING", "TOP"]:
-            self.neck_neutral = False
+            # B. Chest Rotation Check (Loosened to accommodate perspective drift)
+            shoulder_vertical_skew = (support_shoulder.y - active_shoulder.y) / torso_len
+            
+            delta_shoulder_sep = 0.0
+            if self.baseline_shoulder_separation_x is not None:
+                delta_shoulder_sep = shoulder_sep_x - self.baseline_shoulder_separation_x
 
-        # D. Pull Trajectory (Pull to Hip vs Pull to Armpit)
-        # Wrist should travel back toward the hip, not stay forward under the shoulder
-        if self.state == "TOP":
-            wrist_to_hip_x = abs(active_wrist.x - active_hip.x)
-            wrist_to_shoulder_x = abs(active_wrist.x - active_shoulder.x)
-            # If wrist stayed directly under the shoulder instead of moving toward the hip:
-            if wrist_to_shoulder_x < 0.05 and wrist_to_hip_x > 0.18:
-                self.pull_to_hip = False
+            # Relaxed thresholds: 0.28 vertical skew, 0.35 horizontal delta, 5 debounce frames
+            if shoulder_vertical_skew > 0.70 or delta_shoulder_sep > 0.85:
+                self.twist_frames += 1
+                if self.twist_frames >= 5:
+                    self.torso_not_twisted = False
+            else:
+                self.twist_frames = max(0, self.twist_frames - 1)
 
-        # Continuously record the peak pull contraction
-        if self.state in ["PULLING", "TOP"]:
+            # C. Neck Hyperextension
+            if neck_angle < 125:
+                self.neck_frames += 1
+                if self.neck_frames >= 3:
+                    self.neck_neutral = False
+            else:
+                self.neck_frames = max(0, self.neck_frames - 1)
+
+            # D. Pull Trajectory
+            if self.state == "TOP":
+                wrist_to_hip_x = abs(active_wrist.x - active_hip.x) / torso_len
+                wrist_to_shoulder_x = abs(active_wrist.x - active_shoulder.x) / torso_len
+                if wrist_to_shoulder_x < 0.12 and wrist_to_hip_x > 0.35:
+                    self.trajectory_frames += 1
+                    if self.trajectory_frames >= 2:
+                        self.pull_to_hip = False
+
+            # E. Forearm Path
+            if forearm_tilt >= 52.0:
+                self.forearm_frames += 1
+                if self.forearm_frames >= 3:
+                    self.forearm_path_correct = False
+            else:
+                self.forearm_frames = max(0, self.forearm_frames - 1)
+
             self.min_elbow_angle = min(self.min_elbow_angle, elbow_angle)
 
         # ---------------------------------------------------------
-        # 4. STATE MACHINE (With Half-Rep Logic)
+        # 4. STATE MACHINE
         # ---------------------------------------------------------
         if self.state == "WAITING" and self.is_ready:
             self.state = "EXTENDED"
             self.current_feedback = "Drive elbow back toward your hip!"
 
-        elif self.state in ["EXTENDED", "LOWERING"] and elbow_angle < 140:
+        elif self.state in ["EXTENDED", "LOWERING"] and elbow_angle < 128:
             self.state = "PULLING"
             self.min_elbow_angle = elbow_angle
-            self.reversal_frames = 0
-            self.current_feedback = "Pull elbow back..."
+            self.current_feedback = "Drive elbow up and back..."
 
-        # Full contraction achieved (elbow <= 85 deg)
+        # Full contraction reached (elbow <= 85 deg)
         elif self.state == "PULLING" and elbow_angle <= 85:
             self.pull_reached = True
-            self.half_pull_reached = True
             self.state = "TOP"
             self.current_feedback = "Squeeze lat! Lower under control."
 
-        # Half rep reversal: Reached at least 115°, but began dropping early
-        elif self.state == "PULLING" and elbow_angle <= 115 and (elbow_angle - self.min_elbow_angle) > 8:
-            self.reversal_frames += 1
-            if self.reversal_frames >= 3:
-                self.half_pull_reached = True
-                self.state = "LOWERING"
-                self.current_feedback = "Half rep: Lowering weight..."
-
-        elif self.state == "TOP" and elbow_angle > 100:
+        # Early downward reversal before full contraction
+        elif self.state == "PULLING" and (elbow_angle - self.min_elbow_angle) > 8:
             self.state = "LOWERING"
-            self.current_feedback = "Control the descent"
+            self.current_feedback = "Perform a full rep! Drive elbow all the way back."
 
-        # E. Eccentric Drop Detector: Track lowering speed
-        if self.state == "LOWERING":
+        elif self.state == "TOP" and elbow_angle > 95:
+            self.state = "LOWERING"
+            self.current_feedback = "Lower weight under control..."
+
+        # Eccentric Free-Fall Monitor
+        if self.state in ["LOWERING", "PULLING"]:
             if self.prev_elbow_angle is not None:
                 drop_speed = elbow_angle - self.prev_elbow_angle
-                if drop_speed > 20.0:  # Dropped > 20° in a single frame (~33ms)
-                    self.controlled_descent = False
+                if drop_speed > 30.0:
+                    self.drop_frames += 1
+                    if self.drop_frames >= 2:
+                        self.controlled_descent = False
             self.prev_elbow_angle = elbow_angle
         else:
             self.prev_elbow_angle = None
 
-        # Rep Evaluation: Weight returned to full arm extension
-        if self.state == "LOWERING" and elbow_angle >= 150:
+        # ---------------------------------------------------------
+        # 5. REP COMPLETION & EVALUATION
+        # ---------------------------------------------------------
+        if self.state in ["LOWERING", "TOP", "PULLING"] and elbow_angle >= 132:
             is_bad_rep = False
-            
-            # Form Cheats First
+
             if not self.torso_stable:
-                self.current_feedback = "No rep: You stood up! Keep your chest facing the bench."
+                self.current_feedback = "No rep: Do not stand up! Keep chest facing the bench."
                 is_bad_rep = True
             elif not self.torso_not_twisted:
-                self.current_feedback = "No rep: Don't twist your chest open! Keep shoulders level."
-                is_bad_rep = True
-            elif not self.neck_neutral:
-                self.current_feedback = "No rep: Neutral spine! Look down at the bench, not up."
+                self.current_feedback = "No rep: Do not twist chest open! Keep shoulders squared."
                 is_bad_rep = True
             elif not self.pull_to_hip:
-                self.current_feedback = "No rep: Pull back toward your hip, not straight up to your armpit."
+                self.current_feedback = "No rep: Pull back to your hip, not up to your armpit."
+                is_bad_rep = True
+            elif not self.forearm_path_correct:
+                self.current_feedback = "No rep: Do not curl the weight! Drive with your elbow."
+                is_bad_rep = True
+            elif not self.neck_neutral:
+                self.current_feedback = "No rep: Keep neck neutral! Look down at bench, not up."
                 is_bad_rep = True
             elif not self.controlled_descent:
                 self.current_feedback = "No rep: Control the negative! Lower the weight slowly."
                 is_bad_rep = True
             elif not self.ml_posture_maintained:
-                self.current_feedback = "No rep: AI flagged rounded back or improper mechanics."
+                self.current_feedback = "No rep: AI flagged poor spinal mechanics."
                 is_bad_rep = True
-                
-            # Rep Quality / ROM Checks
+            elif not self.pull_reached:
+                self.current_feedback = "No rep: Perform a full rep! Drive elbow all the way up."
+                is_bad_rep = True
+
             if is_bad_rep:
                 self.bad_reps += 1
-            elif self.pull_reached:
-                self.good_reps += 1
-                self.current_feedback = "Perfect row! Full range of motion."
-            elif self.half_pull_reached:
-                self.half_reps += 1
-                self.current_feedback = "Counted as Half Rep: Drive elbow higher past your ribs next time!"
             else:
-                self.bad_reps += 1
-                self.current_feedback = "No rep: Pull was too shallow to count."
-                
-            # Reset flags for next rep
+                self.good_reps += 1
+                self.current_feedback = "Great one-arm row! Clean repetition."
+
+            # Reset state for next rep
             self.state = "EXTENDED"
             self.pull_reached = False
-            self.half_pull_reached = False
             self.min_elbow_angle = 180.0
-            self.reversal_frames = 0
+
+            self.drop_frames = 0
+            self.forearm_frames = 0
+            self.twist_frames = 0
+            self.torso_frames = 0
+            self.neck_frames = 0
+            self.trajectory_frames = 0
+            self.ml_bad_frames = 0
+
             self.torso_stable = True
             self.torso_not_twisted = True
             self.neck_neutral = True
             self.controlled_descent = True
             self.pull_to_hip = True
-            self.prev_elbow_angle = None
+            self.forearm_path_correct = True
             self.ml_posture_maintained = True
-            self.frame_buffer.clear()
+            self.prev_elbow_angle = None
 
-        # Dynamic Scoring
-        form_score = max(0, min(100, int(((160 - elbow_angle) / 75) * 100)))
-        if not self.torso_stable: form_score -= 30
-        if not self.torso_not_twisted: form_score -= 25
-        if not self.pull_to_hip: form_score -= 20
-        if not self.neck_neutral: form_score -= 15
-        if not self.controlled_descent: form_score -= 20
-        if not self.ml_posture_maintained: form_score -= 30
-        if self.half_pull_reached and not self.pull_reached: form_score -= 15
-        form_score = max(0, form_score)
+            if self.baseline_hip_hinge is not None:
+                self.baseline_hip_hinge = 0.85 * self.baseline_hip_hinge + 0.15 * hip_hinge
+
+            self.frame_buffer.clear()
 
         return {
             "exercise": "One Arm Row",
@@ -285,7 +353,6 @@ class OneArmRowTracker:
             "bad_reps": self.bad_reps,
             "half_reps": self.half_reps,
             "total_reps": total_reps,
-            "form_score": form_score,
             "feedback": self.current_feedback,
             "elbow_angle": round(elbow_angle, 1),
             "hip_angle": round(hip_hinge, 1)
