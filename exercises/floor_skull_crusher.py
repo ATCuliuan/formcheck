@@ -10,18 +10,20 @@ class FloorSkullCrusherTracker:
         self.state = "WAITING"
         self.good_reps = 0
         self.bad_reps = 0
-        self.half_reps = 0
+        self.half_reps = 0                 # Kept for camera test harness compatibility
         
         self.full_depth_reached = False    # Bottom flexion (elbow <= 75°)
-        self.lockout_reached = False       # Top extension (elbow >= 158°)
         self.min_elbow_angle = 180.0
         
         # Posture Tripwires (SIDE VIEW - LYING DOWN)
-        self.upper_arm_vertical = True     # Upper arm drifts forward (should stay ~90° relative to torso)
-        self.shoulders_stable = True       # Catches pressing like a bench press instead of extending
-        self.controlled_descent = True     # Free-fall to the forehead
+        self.is_side_view = True           # Profile camera orientation check
+        self.upper_arm_vertical = True     # Upper arm drifts forward toward knees (< 68°)
+        self.shoulders_stable = True       # Catches bench press cheat (dropping elbows below shoulders)
+        self.controlled_descent = True     # Catches free-falling weight toward forehead
         self.ml_posture_maintained = True
 
+        # Debounce counters
+        self.profile_frames = 0
         self.arm_drift_frames = 0
         self.press_cheat_frames = 0
         self.drop_frames = 0
@@ -29,6 +31,7 @@ class FloorSkullCrusherTracker:
         self.post_rep_timer = 0
         self.is_ready = False
 
+        self.prev_elbow_angle = None
         self.current_feedback = "Lie flat sideways, arms straight up above chest"
         self.mp_pose = mp.solutions.pose
         self.sequence_length = 30
@@ -86,11 +89,21 @@ class FloorSkullCrusherTracker:
         active_wrist = r_wrist if r_vis > l_vis else l_wrist
         active_hip = r_hip if r_vis > l_vis else l_hip
 
+        # Sagittal Joint Kinematics
         elbow_angle = calculate_angle(active_shoulder, active_elbow, active_wrist)
         upper_arm_angle = calculate_angle(active_hip, active_shoulder, active_elbow)
 
-        # Baseline: Lying horizontal with upper arm vertical (~80°-100°) and elbows locked
-        is_at_top = (elbow_angle >= 155) and (75 <= upper_arm_angle <= 110)
+        # Profile & Horizontal Floor Checks
+        torso_len = np.hypot(active_shoulder.x - active_hip.x, active_shoulder.y - active_hip.y) or 0.40
+        shoulder_span_x = abs(l_shoulder.x - r_shoulder.x)
+        is_side = (shoulder_span_x / torso_len) < 0.42
+
+        dx_torso = abs(active_shoulder.x - active_hip.x)
+        dy_torso = abs(active_shoulder.y - active_hip.y)
+        is_lying_horizontal = dx_torso > (dy_torso * 0.85)
+
+        # Baseline: Lying horizontal with upper arms pointing up (~75°-115°) and elbows locked
+        is_at_top = (elbow_angle >= 154) and (75 <= upper_arm_angle <= 115) and is_side and is_lying_horizontal
         if is_at_top:
             self.setup_frames += 1
         else:
@@ -102,35 +115,56 @@ class FloorSkullCrusherTracker:
         if not self.is_ready:
             self.state = "WAITING"
             self.frame_buffer.clear()
+            feedback_msg = "Turn sideways to camera" if not is_side else "Lie flat on floor, lock arms straight over chest"
             return {
                 "exercise": "Floor Skull Crusher", "state": self.state,
                 "good_reps": self.good_reps, "bad_reps": self.bad_reps, "half_reps": self.half_reps,
-                "total_reps": total_reps, "form_score": 0, "feedback": "Lock arms straight up over chest",
+                "total_reps": total_reps, "form_score": 0, "feedback": feedback_msg,
                 "elbow_angle": round(elbow_angle, 1), "depth_reached": False
             }
 
+        # ST-GCN Temporal Buffer
         frame_coords = self._extract_body_keypoints(landmarks)
         self.frame_buffer.append(frame_coords)
+        if self.interpreter and len(self.frame_buffer) == self.sequence_length:
+            try:
+                seq = np.expand_dims(np.array(self.frame_buffer, dtype=np.float32), axis=0)
+                self.interpreter.set_tensor(self.input_details[0]['index'], seq)
+                self.interpreter.invoke()
+                out = self.interpreter.get_tensor(self.output_details[0]['index'])
+                if np.argmax(out, axis=1)[0] == 0 and self.state != "TOP":
+                    self.ml_posture_maintained = False
+            except Exception:
+                pass
 
         # Kinematic Tripwires
         if self.state in ["LOWERING", "BOTTOM", "PRESSING"]:
-            # Upper arm drifting forward toward hips (< 70°) or backward (> 115°)
-            if upper_arm_angle < 68 or upper_arm_angle > 120:
+            if not is_side:
+                self.profile_frames += 1
+                if self.profile_frames >= 4:
+                    self.is_side_view = False
+            else:
+                self.profile_frames = max(0, self.profile_frames - 1)
+
+            # Upper arm drifting forward toward knees (< 68°)
+            if upper_arm_angle < 68.0:
                 self.arm_drift_frames += 1
-                if self.arm_drift_frames >= 4: self.upper_arm_vertical = False
+                if self.arm_drift_frames >= 4:
+                    self.upper_arm_vertical = False
             else:
                 self.arm_drift_frames = max(0, self.arm_drift_frames - 1)
 
-            # Bench press cheat: elbow dropped down toward torso
+            # Bench press cheat: elbows dropping down toward floor/torso
             if active_elbow.y > active_shoulder.y:
                 self.press_cheat_frames += 1
-                if self.press_cheat_frames >= 4: self.shoulders_stable = False
+                if self.press_cheat_frames >= 4:
+                    self.shoulders_stable = False
             else:
                 self.press_cheat_frames = max(0, self.press_cheat_frames - 1)
 
             self.min_elbow_angle = min(self.min_elbow_angle, elbow_angle)
 
-        # State Machine
+        # State Machine (Strict No Half-Reps)
         if self.state == "WAITING" and self.is_ready:
             self.state = "TOP"
             if self.post_rep_timer == 0:
@@ -149,7 +183,7 @@ class FloorSkullCrusherTracker:
             if self.post_rep_timer == 0:
                 self.current_feedback = "Full depth! Extend straight up."
 
-        # Incomplete Rep reversal
+        # Incomplete Rep reversal before hitting depth
         elif self.state == "LOWERING" and (elbow_angle - self.min_elbow_angle) > 8:
             self.state = "PRESSING"
             self.current_feedback = "Perform a full rep! Bend elbows to 90° or deeper."
@@ -159,14 +193,35 @@ class FloorSkullCrusherTracker:
             if self.post_rep_timer == 0:
                 self.current_feedback = "Lock out at the top..."
 
-        # Rep Completion: Returns to top lockout (>= 158°)
-        if self.state in ["PRESSING", "BOTTOM", "LOWERING"] and elbow_angle >= 158:
+        # Eccentric drop detector
+        if self.state in ["LOWERING", "PRESSING"]:
+            if self.prev_elbow_angle is not None:
+                drop_speed = self.prev_elbow_angle - elbow_angle
+                if drop_speed > 24.0:
+                    self.drop_frames += 1
+                    if self.drop_frames >= 2:
+                        self.controlled_descent = False
+            self.prev_elbow_angle = elbow_angle
+        else:
+            self.prev_elbow_angle = None
+
+        # Rep Completion: Returns to top lockout (>= 154°)
+        if self.state in ["PRESSING", "BOTTOM", "LOWERING"] and elbow_angle >= 154:
             is_bad_rep = False
-            if not self.upper_arm_vertical:
-                self.current_feedback = "No rep: Keep upper arms fixed! Do not swing elbows forward/backward."
+            if not self.is_side_view:
+                self.current_feedback = "No rep: Lie sideways to camera!"
+                is_bad_rep = True
+            elif not self.upper_arm_vertical:
+                self.current_feedback = "No rep: Keep upper arms fixed! Do not swing elbows forward."
                 is_bad_rep = True
             elif not self.shoulders_stable:
                 self.current_feedback = "No rep: Do not bench press! Rotate only at the elbow joint."
+                is_bad_rep = True
+            elif not self.controlled_descent:
+                self.current_feedback = "No rep: Control the negative! Do not drop weights toward face."
+                is_bad_rep = True
+            elif not self.ml_posture_maintained:
+                self.current_feedback = "No rep: AI flagged poor stability/kinetic breakdown."
                 is_bad_rep = True
             elif not self.full_depth_reached:
                 self.current_feedback = "No rep: Incomplete range! Lower weight fully to forehead level."
@@ -182,16 +237,23 @@ class FloorSkullCrusherTracker:
             self.state = "TOP"
             self.full_depth_reached = False
             self.min_elbow_angle = 180.0
+            self.is_side_view = True
             self.upper_arm_vertical = True
             self.shoulders_stable = True
+            self.controlled_descent = True
+            self.ml_posture_maintained = True
+            self.profile_frames = 0
             self.arm_drift_frames = 0
             self.press_cheat_frames = 0
+            self.drop_frames = 0
             self.frame_buffer.clear()
 
+        # Dynamic Scoring
         form_score = max(0, min(100, int(100 - abs(elbow_angle - 75) * 0.5)))
         if not self.upper_arm_vertical: form_score -= 35
         if not self.shoulders_stable: form_score -= 30
-        if not self.full_depth_reached: form_score -= 25
+        if not self.controlled_descent: form_score -= 20
+        if not self.full_depth_reached and self.state == "PRESSING": form_score -= 25
         form_score = max(0, form_score)
 
         return {

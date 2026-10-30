@@ -12,20 +12,25 @@ class DumbbellKickbackTracker:
         self.bad_reps = 0
         self.half_reps = 0                 # Kept for camera test harness compatibility
         
-        self.target_reached = False        # Full extension lockout (elbow >= 160°)
+        self.target_reached = False        # Full extension lockout (elbow >= 155°)
         self.max_extension = 0.0
         
         # Posture Tripwires (SIDE / SAGITTAL VIEW)
         self.is_side_view = True           # Profile camera angle check
-        self.torso_hinged = True           # Catches standing too upright
-        self.elbow_pinned = True           # Catches shoulder swinging / dropping the elbow
+        self.torso_hinged = True           # Catches standing too upright (> 148°)
+        self.elbow_pinned = True           # Catches dropping elbow towards floor / shoulder swinging
+        self.no_torso_heave = True         # Catches swinging chest to generate momentum
         self.controlled_eccentric = True   # Catches free-falling the forearm
-        self.ml_posture_maintained = True
+        self.ml_posture_maintained = True  # ST-GCN AI flag
+
+        # Baseline torso angle during static hinge setup
+        self.baseline_torso_angle = None
 
         # Debounce counters
         self.profile_frames = 0
         self.torso_frames = 0
-        self.elbow_drift_frames = 0
+        self.elbow_drop_frames = 0
+        self.heave_frames = 0
         self.standing_frames = 0
         self.drop_frames = 0
         
@@ -105,10 +110,17 @@ class DumbbellKickbackTracker:
         torso_height = abs(active_shoulder.y - active_hip.y) or 0.4
         is_side = (shoulder_span_x / torso_height) < 0.42
 
-        # Setup: Hinge torso (< 145°) and upper arm pinned back (>= 20°)
-        is_in_hinge = (torso_angle <= 145) and (upper_arm_angle >= 18) and is_side
+        # Upper arm pinned: angle should stay tight to torso (< 32°)
+        is_elbow_pinned_properly = upper_arm_angle <= 32.0
+
+        # Setup: Hinge torso (< 145°) and upper arm pinned back
+        is_in_hinge = (torso_angle <= 145) and is_elbow_pinned_properly and is_side
         if is_in_hinge:
             self.standing_frames += 1
+            if self.baseline_torso_angle is None:
+                self.baseline_torso_angle = torso_angle
+            else:
+                self.baseline_torso_angle = 0.90 * self.baseline_torso_angle + 0.10 * torso_angle
         else:
             self.standing_frames = 0
 
@@ -118,11 +130,12 @@ class DumbbellKickbackTracker:
         if not self.is_ready:
             self.state = "WAITING"
             self.frame_buffer.clear()
+            feedback_msg = "Turn sideways to camera" if not is_side else "Hinge at hips (~45°), pin elbow to your side"
             return {
                 "exercise": "Dumbbell Kickback", "state": self.state,
                 "good_reps": self.good_reps, "bad_reps": self.bad_reps, "half_reps": self.half_reps,
                 "total_reps": total_reps, "form_score": 0,
-                "feedback": "Hinge hips forward and pull elbow up high",
+                "feedback": feedback_msg,
                 "elbow_angle": round(elbow_angle, 1), "torso_angle": round(torso_angle, 1), "depth_reached": False
             }
 
@@ -141,30 +154,38 @@ class DumbbellKickbackTracker:
                 pass
 
         # Kinematic Tripwires
-        if self.state in ["EXTENDING", "LOCKED"]:
+        if self.state in ["EXTENDING", "LOCKED", "RETURNING"]:
             if not is_side:
                 self.profile_frames += 1
                 if self.profile_frames >= 4: self.is_side_view = False
             else:
                 self.profile_frames = max(0, self.profile_frames - 1)
 
-            # Torso standing up cheat (> 150°)
-            if torso_angle > 150:
+            # Torso standing up cheat (> 148°)
+            if torso_angle > 148.0:
                 self.torso_frames += 1
                 if self.torso_frames >= 4: self.torso_hinged = False
             else:
                 self.torso_frames = max(0, self.torso_frames - 1)
 
-            # Dropping the elbow below the torso line (< 15°)
-            if upper_arm_angle < 15:
-                self.elbow_drift_frames += 1
-                if self.elbow_drift_frames >= 4: self.elbow_pinned = False
+            # Dropping elbow toward floor (upper arm angle swings forward > 35°)
+            if upper_arm_angle > 35.0:
+                self.elbow_drop_frames += 1
+                if self.elbow_drop_frames >= 4: self.elbow_pinned = False
             else:
-                self.elbow_drift_frames = max(0, self.elbow_drift_frames - 1)
+                self.elbow_drop_frames = max(0, self.elbow_drop_frames - 1)
+
+            # Torso heave / momentum check
+            if self.baseline_torso_angle is not None:
+                if abs(torso_angle - self.baseline_torso_angle) > 15.0:
+                    self.heave_frames += 1
+                    if self.heave_frames >= 3: self.no_torso_heave = False
+                else:
+                    self.heave_frames = max(0, self.heave_frames - 1)
 
             self.max_extension = max(self.max_extension, elbow_angle)
 
-        # State Machine
+        # State Machine (No Half-Reps - Full Lockout Only)
         if self.state == "WAITING" and self.is_ready:
             self.state = "READY"
             if self.post_rep_timer == 0:
@@ -176,8 +197,8 @@ class DumbbellKickbackTracker:
             if self.post_rep_timer == 0:
                 self.current_feedback = "Lock arm straight back..."
 
-        # Full Lockout (>= 160°)
-        elif self.state == "EXTENDING" and elbow_angle >= 160:
+        # Full Lockout (>= 155°)
+        elif self.state == "EXTENDING" and elbow_angle >= 155:
             self.target_reached = True
             self.state = "LOCKED"
             if self.post_rep_timer == 0:
@@ -188,7 +209,7 @@ class DumbbellKickbackTracker:
             self.state = "RETURNING"
             self.current_feedback = "Perform a full rep! Lock elbow out completely."
 
-        elif self.state == "LOCKED" and elbow_angle < 150:
+        elif self.state == "LOCKED" and elbow_angle < 145:
             self.state = "RETURNING"
             if self.post_rep_timer == 0:
                 self.current_feedback = "Control the weight forward"
@@ -216,6 +237,9 @@ class DumbbellKickbackTracker:
             elif not self.elbow_pinned:
                 self.current_feedback = "No rep: Keep upper arm pinned high! Do not swing elbow."
                 is_bad_rep = True
+            elif not self.no_torso_heave:
+                self.current_feedback = "No rep: Do not heave your chest up to swing the weight."
+                is_bad_rep = True
             elif not self.controlled_eccentric:
                 self.current_feedback = "No rep: Control the negative! Do not drop forearm."
                 is_bad_rep = True
@@ -239,18 +263,21 @@ class DumbbellKickbackTracker:
             self.is_side_view = True
             self.torso_hinged = True
             self.elbow_pinned = True
+            self.no_torso_heave = True
             self.controlled_eccentric = True
             self.ml_posture_maintained = True
             self.prev_elbow_angle = None
             self.profile_frames = 0
             self.torso_frames = 0
-            self.elbow_drift_frames = 0
+            self.elbow_drop_frames = 0
+            self.heave_frames = 0
             self.drop_frames = 0
             self.frame_buffer.clear()
 
-        form_score = max(0, min(100, int((elbow_angle / 160) * 100)))
+        form_score = max(0, min(100, int((elbow_angle / 155) * 100)))
         if not self.torso_hinged: form_score -= 30
         if not self.elbow_pinned: form_score -= 35
+        if not self.no_torso_heave: form_score -= 25
         if not self.controlled_eccentric: form_score -= 20
         if not self.target_reached: form_score -= 25
         form_score = max(0, form_score)
