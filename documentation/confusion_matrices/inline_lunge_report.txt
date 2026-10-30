@@ -1,0 +1,16 @@
+Exercise: Inline Lunge
+Training Accuracy:   97.00%
+Validation Accuracy: 96.50%
+
+               precision    recall  f1-score   support
+
+ Bad Form (0)       0.93      1.00      0.97       100
+Good Form (1)       1.00      0.93      0.96       100
+
+     accuracy                           0.96       200
+    macro avg       0.97      0.97      0.96       200
+ weighted avg       0.97      0.96      0.96       200
+
+Confusion Matrix:
+[[100   0]
+ [  7  93]]

@@ -23,10 +23,10 @@ def apply_joint_mask(sequence, exercise):
         "side_lateral_raise"
     ]
     plank_core_exercises = [
-        "pushup", "barbell_row", "one_arm_row", "standing_ab_twists"
+        "pushup", "barbell_row", "standing_ab_twists"
     ]
     full_body_crop = [
-        "squat", "deadlift", "burpees", "mule_kick", "dumbbell_reverse_lunge"
+         "deadlift", "burpees", "mule_kick", "dumbbell_reverse_lunge"
     ]
     
     if exercise in upper_body_exercises:
@@ -75,13 +75,6 @@ def generate_augmented_bad_pushup(sequence):
     bad_seq = np.copy(sequence)
     drop_amount = np.random.uniform(0.15, 0.40)
     for joint in [0, 1, 4]: bad_seq[:, joint, 1] -= drop_amount  
-    return bad_seq + np.random.normal(0, 0.025, sequence.shape)
-
-def generate_augmented_bad_squat(sequence):
-    bad_seq = np.copy(sequence)
-    cave_amount = np.random.uniform(0.05, 0.15)
-    bad_seq[:, 13, 0] -= cave_amount
-    bad_seq[:, 17, 0] += cave_amount
     return bad_seq + np.random.normal(0, 0.025, sequence.shape)
 
 def generate_augmented_bad_burpees(sequence):
@@ -138,12 +131,6 @@ def generate_augmented_bad_dumbbell_biceps_curls(sequence):
     for joint in [16, 17]: bad_seq[:, joint, 1] -= drop_amount
     return bad_seq + np.random.normal(0, 0.025, sequence.shape)
 
-def generate_augmented_bad_one_arm_row(sequence):
-    bad_seq = np.copy(sequence)
-    drop_amount = np.random.uniform(0.15, 0.35)
-    for joint in [2, 3, 4, 8, 20]: bad_seq[:, joint, 1] -= drop_amount
-    return bad_seq + np.random.normal(0, 0.025, sequence.shape)
-
 def generate_augmented_bad_overhead_trap_raises(sequence):
     bad_seq = np.copy(sequence)
     drop_amount = np.random.uniform(0.15, 0.35)
@@ -156,18 +143,12 @@ def generate_augmented_bad_side_lateral_raise(sequence):
     for joint in [14, 15, 16, 17]: bad_seq[:, joint, 1] -= drop_amount
     return bad_seq + np.random.normal(0, 0.025, sequence.shape)
 
-def generate_augmented_bad_standing_ab_twists(sequence):
-    bad_seq = np.copy(sequence)
-    drop_amount = np.random.uniform(0.15, 0.35)
-    for joint in [14, 15, 16, 17]: bad_seq[:, joint, 1] -= drop_amount
-    return bad_seq + np.random.normal(0, 0.025, sequence.shape)
-
 
 # ==========================================
 # 3. EXTRACTION AND AUGMENTATION LOGIC
 # ==========================================
 def extract_and_augment(exercise):
-    good_folder = "train"
+    good_folder = "fit3d_train"
     bad_folder = "train_bad"
 
     dataset_x = []
@@ -277,7 +258,6 @@ def extract_and_augment(exercise):
             base_good_rep = good_reps_list[i % len(good_reps_list)] 
             
             if exercise == "pushup": dataset_x.append(generate_augmented_bad_pushup(base_good_rep))
-            elif exercise == "squat": dataset_x.append(generate_augmented_bad_squat(base_good_rep))
             elif exercise == "burpees": dataset_x.append(generate_augmented_bad_burpees(base_good_rep))
             elif exercise == "mule_kick": dataset_x.append(generate_augmented_bad_mule_kick(base_good_rep))
             elif exercise == "dumbbell_reverse_lunge": dataset_x.append(generate_augmented_bad_dumbbell_reverse_lunge(base_good_rep))
@@ -287,10 +267,8 @@ def extract_and_augment(exercise):
             elif exercise == "barbell_row": dataset_x.append(generate_augmented_bad_barbell_row(base_good_rep))
             elif exercise == "deadlift": dataset_x.append(generate_augmented_bad_deadlift(base_good_rep))
             elif exercise == "dumbbell_biceps_curls": dataset_x.append(generate_augmented_bad_dumbbell_biceps_curls(base_good_rep))
-            elif exercise == "one_arm_row": dataset_x.append(generate_augmented_bad_one_arm_row(base_good_rep))
             elif exercise == "overhead_trap_raises": dataset_x.append(generate_augmented_bad_overhead_trap_raises(base_good_rep))
             elif exercise == "side_lateral_raise": dataset_x.append(generate_augmented_bad_side_lateral_raise(base_good_rep))
-            elif exercise == "standing_ab_twists": dataset_x.append(generate_augmented_bad_standing_ab_twists(base_good_rep))
             else: dataset_x.append(generate_augmented_good_form(base_good_rep)) 
             
             dataset_y.append(0)
@@ -324,17 +302,14 @@ def extract_and_augment(exercise):
 
 if __name__ == "__main__":
     extract_and_augment("pushup")
-    extract_and_augment("squat")
-    extract_and_augment("burpees")
+    extract_and_augment("burpees")#
     extract_and_augment("mule_kick")
-    extract_and_augment("dumbbell_reverse_lunge")
+    extract_and_augment("dumbbell_reverse_lunge")#
     extract_and_augment("dumbbell_overhead_shoulder_press")
     extract_and_augment("dumbbell_hammer_curls")
-    extract_and_augment("band_pull_apart")
-    extract_and_augment("barbell_row")
-    extract_and_augment("deadlift")
+    extract_and_augment("band_pull_apart")#
+    extract_and_augment("barbell_row")#
+    extract_and_augment("deadlift")#
     extract_and_augment("dumbbell_biceps_curls")
-    extract_and_augment("one_arm_row")
-    extract_and_augment("overhead_trap_raises")
-    extract_and_augment("side_lateral_raise")
-    extract_and_augment("standing_ab_twists")
+    extract_and_augment("overhead_trap_raises")#
+    extract_and_augment("side_lateral_raise")#

@@ -1,0 +1,16 @@
+Exercise: Hurdle Step
+Training Accuracy:   88.38%
+Validation Accuracy: 91.50%
+
+               precision    recall  f1-score   support
+
+ Bad Form (0)       0.85      1.00      0.92       100
+Good Form (1)       1.00      0.83      0.91       100
+
+     accuracy                           0.92       200
+    macro avg       0.93      0.92      0.91       200
+ weighted avg       0.93      0.92      0.91       200
+
+Confusion Matrix:
+[[100   0]
+ [ 17  83]]

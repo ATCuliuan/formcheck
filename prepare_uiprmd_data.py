@@ -4,9 +4,9 @@ import numpy as np
 
 SEQUENCE_LENGTH = 30
 
-# Using absolute paths based on your new folder structure
-GOOD_DIR = r"C:\Users\Ayoyi\Desktop\formcheck\UI-PRMD-Visualize-python-port-master\Segmented Movements\Kinect\Positions"
-BAD_DIR = r"C:\Users\Ayoyi\Desktop\formcheck\UI-PRMD-Visualize-python-port-master\Incorrect Segmented Movements\Kinect\Positions"
+# Updated to use relative paths based on your new clean folder structure
+GOOD_DIR = os.path.join("UI-PRMD", "Segmented Movements", "Kinect", "Positions")
+BAD_DIR = os.path.join("UI-PRMD", "Incorrect Segmented Movements", "Kinect", "Positions")
 
 # Mapping UI-PRMD (22 joints) to ST-GCN (25 joints)
 UI_TO_STGCN = [
@@ -34,13 +34,29 @@ def sample_frames(frames_data, target_length):
     indices = np.linspace(0, current_length - 1, target_length, dtype=int)
     return frames_data[indices]
 
+def normalize_skeleton(sequence):
+    """Scales the skeleton based on shoulder width to prevent camera-distance data leaks."""
+    norm_seq = np.copy(sequence)
+    for i in range(len(norm_seq)):
+        frame = norm_seq[i]
+        center = np.copy(frame[2]) # Spine Shoulder
+        shoulder_dist = np.linalg.norm(frame[4] - frame[8]) 
+        if shoulder_dist < 1e-5: shoulder_dist = 1.0 
+            
+        for j in range(25):
+            if np.all(frame[j] == 0.0):
+                norm_seq[i, j] = 0.0
+            else:
+                norm_seq[i, j] = (frame[j] - center) / shoulder_dist
+    return norm_seq
+
 def augment_sequence(sequence):
     """Injects slight 3D noise to simulate different body types and camera jitter."""
-    noise = np.random.normal(0, 0.01, sequence.shape) 
+    noise = np.random.normal(0, 0.025, sequence.shape) 
     return sequence + noise
 
 def process_folder(movement_code, folder_path, label, dataset_x, dataset_y):
-    """Reads all segmented files in a folder and applies standard noise augmentation."""
+    """Reads all segmented files in a folder, maps, normalizes, and augments."""
     search_pattern = os.path.join(folder_path, f"{movement_code}_*positions*.txt")
     file_list = glob.glob(search_pattern)
     
@@ -49,13 +65,17 @@ def process_folder(movement_code, folder_path, label, dataset_x, dataset_y):
             motion_data = load_and_map_sequence(file_path)
             sampled_seq = sample_frames(motion_data, SEQUENCE_LENGTH)
             
+            # Apply Normalization before saving
+            normalized_seq = normalize_skeleton(sampled_seq)
+            
             # Base Rep
-            dataset_x.append(sampled_seq)
+            dataset_x.append(normalized_seq)
             dataset_y.append(label)
             
             # Create 4 extra variations using noise to ensure a robust dataset size
             for _ in range(4):
-                dataset_x.append(augment_sequence(sampled_seq))
+                augmented_seq = augment_sequence(normalized_seq)
+                dataset_x.append(augmented_seq)
                 dataset_y.append(label)
                 
         except Exception as e:
@@ -91,12 +111,14 @@ def extract_and_augment(movement_code, exercise_name):
     print(f"✅ Generated Real-World UI-PRMD {exercise_name.replace('_', ' ').title()} Dataset: {good_count} Good | {bad_count} Bad (Total: {len(dataset_y)})")
 
 if __name__ == "__main__":
-    # The new execution list for UI-PRMD
+    # Execution list for UI-PRMD
     extract_and_augment("m01", "squat")
     extract_and_augment("m02", "hurdle_step")
     extract_and_augment("m03", "inline_lunge")
     extract_and_augment("m04", "side_lunge")
+    extract_and_augment("m05", "sit_to_stand")
     extract_and_augment("m06", "standing_active_straight_leg_raise")
     extract_and_augment("m07", "standing_shoulder_abduction")
     extract_and_augment("m08", "standing_shoulder_extension")
+    extract_and_augment("m09", "standing_shoulder_internal_external_rotation")
     extract_and_augment("m10", "standing_shoulder_scaption")

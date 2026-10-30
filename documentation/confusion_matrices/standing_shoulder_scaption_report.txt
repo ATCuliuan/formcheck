@@ -1,0 +1,16 @@
+Exercise: Standing Shoulder Scaption
+Training Accuracy:   89.62%
+Validation Accuracy: 92.00%
+
+               precision    recall  f1-score   support
+
+ Bad Form (0)       0.86      1.00      0.93       100
+Good Form (1)       1.00      0.84      0.91       100
+
+     accuracy                           0.92       200
+    macro avg       0.93      0.92      0.92       200
+ weighted avg       0.93      0.92      0.92       200
+
+Confusion Matrix:
+[[100   0]
+ [ 16  84]]

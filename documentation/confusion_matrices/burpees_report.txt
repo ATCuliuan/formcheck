@@ -1,0 +1,16 @@
+Exercise: Burpees
+Training Accuracy:   99.51%
+Validation Accuracy: 98.08%
+
+               precision    recall  f1-score   support
+
+ Bad Form (0)       1.00      0.96      0.98        26
+Good Form (1)       0.96      1.00      0.98        26
+
+     accuracy                           0.98        52
+    macro avg       0.98      0.98      0.98        52
+ weighted avg       0.98      0.98      0.98        52
+
+Confusion Matrix:
+[[25  1]
+ [ 0 26]]

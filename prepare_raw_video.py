@@ -416,7 +416,7 @@ if __name__ == "__main__":
     extract_and_augment("dumbbell_floor_press")
     extract_and_augment("decline_pushup")
     extract_and_augment("dumbbell_floor_flye")
-    extract_and_augment("renegade_row")
+    extract_and_augment("renegade_row")#
     extract_and_augment("good_morning")#
     extract_and_augment("standing_overhead_extension")#
     extract_and_augment("dumbbell_kickback")

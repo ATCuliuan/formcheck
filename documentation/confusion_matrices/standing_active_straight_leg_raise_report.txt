@@ -1,0 +1,16 @@
+Exercise: Standing Active Straight Leg Raise
+Training Accuracy:   99.50%
+Validation Accuracy: 99.50%
+
+               precision    recall  f1-score   support
+
+ Bad Form (0)       0.99      1.00      1.00       100
+Good Form (1)       1.00      0.99      0.99       100
+
+     accuracy                           0.99       200
+    macro avg       1.00      0.99      0.99       200
+ weighted avg       1.00      0.99      0.99       200
+
+Confusion Matrix:
+[[100   0]
+ [  1  99]]

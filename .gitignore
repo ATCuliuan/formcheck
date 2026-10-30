@@ -47,5 +47,22 @@ dataset/
 video_exercises/
 train/
 test/
-dataset/
 __pycache__/
+
+# --- ADD THESE NEW FOLDERS ---
+raw_videos/
+raw_bad_videos/
+train_bad/
+fit3d_train/
+UI-PRMD/
+
+# Blanket protection against heavy media and data sheets
+*.mp4
+*.avi
+*.mov
+*.xlsx
+*.csv
+
+# IDE and AI environment configs
+.vscode/
+.claude/

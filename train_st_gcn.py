@@ -13,7 +13,7 @@ np.random.seed(42)
 tf.random.set_seed(42)
 
 # Change this to whatever exercise you are currently training
-EXERCISE = "standing_overhead_extension" 
+EXERCISE = "standing_shoulder_internal_external_rotation" 
 
 def twin_safe_split(X, y, test_size=0.2):
     """

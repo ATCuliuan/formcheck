@@ -1,0 +1,16 @@
+Exercise: Standing Shoulder Extension
+Training Accuracy:   81.38%
+Validation Accuracy: 80.50%
+
+               precision    recall  f1-score   support
+
+ Bad Form (0)       1.00      0.61      0.76       100
+Good Form (1)       0.72      1.00      0.84       100
+
+     accuracy                           0.81       200
+    macro avg       0.86      0.80      0.80       200
+ weighted avg       0.86      0.81      0.80       200
+
+Confusion Matrix:
+[[ 61  39]
+ [  0 100]]

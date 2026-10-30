@@ -1,0 +1,16 @@
+Exercise: Band Pull Apart
+Training Accuracy:   93.75%
+Validation Accuracy: 89.58%
+
+               precision    recall  f1-score   support
+
+ Bad Form (0)       0.83      1.00      0.91        24
+Good Form (1)       1.00      0.79      0.88        24
+
+     accuracy                           0.90        48
+    macro avg       0.91      0.90      0.89        48
+ weighted avg       0.91      0.90      0.89        48
+
+Confusion Matrix:
+[[24  0]
+ [ 5 19]]
