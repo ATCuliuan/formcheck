@@ -12,34 +12,36 @@ class DumbbellBicepsCurlsTracker:
         self.bad_reps = 0
         self.half_reps = 0                 
 
-        self.peak_contraction_reached = False  # Full curl (elbow <= 75 deg, relaxed)
+        self.peak_contraction_reached = False  # Full curl (elbow <= 75 deg)
         self.half_curl_reached = False         # Half curl (elbow <= 105 deg)
         self.min_elbow_angle = 180.0          
         self.reversal_frames = 0               
 
-        # Balanced Tripwires (SIDE / SAGITTAL VIEW)
-        self.elbow_stayed_down = True          # Catches lifting upper arm to chest
+        # Upper-Body Strict Tripwires (SIDE / SAGITTAL VIEW)
+        self.elbow_stayed_down = True          # Catches lifting/swinging upper arm forward or up
         self.shoulder_not_shrugged = True      # Catches heavy trap shrugging
-        self.no_leg_bounce = True              # Catches distinct knee bouncing
         self.torso_stable = True               # Catches excessive backward torso swing
         self.ml_posture_maintained = True      # ST-GCN posture detection
 
-        # Advisory / Reminder Flag
+        # Advisory / Warning Flags (Does not invalidate a good rep)
         self.fast_descent_warning = False  
+        self.knee_bounce_warning = False       # Advisory warning for using leg momentum
 
         self.baseline_ear_shoulder_dist = None
+        self.baseline_shoulder_hip_dist = None
         self.baseline_knee_angle = None
 
+        # Debounce counters
         self.elevation_frames = 0
         self.shrug_frames = 0
-        self.bounce_frames = 0
         self.torso_frames = 0
+        self.knee_frames = 0
         self.drop_frames = 0
 
         self.prev_elbow_angle = None
         self.extended_frames = 0
         self.is_ready = False
-        self.current_feedback = "Stand sideways, let arm hang to begin"
+        self.current_feedback = "Show body sideways, let arm hang"
         self.mp_pose = mp.solutions.pose
 
         self.sequence_length = 30
@@ -84,7 +86,7 @@ class DumbbellBicepsCurlsTracker:
         l_ankle = landmarks[self.mp_pose.PoseLandmark.LEFT_ANKLE.value]
         r_ankle = landmarks[self.mp_pose.PoseLandmark.RIGHT_ANKLE.value]
 
-        # Dominant camera-facing profile
+        # Visibility across profile
         l_vis = sum([l_shoulder.visibility, l_elbow.visibility, l_wrist.visibility, l_hip.visibility])
         r_vis = sum([r_shoulder.visibility, r_elbow.visibility, r_wrist.visibility, r_hip.visibility])
 
@@ -96,7 +98,7 @@ class DumbbellBicepsCurlsTracker:
                 "exercise": "Dumbbell Biceps Curls", "state": "WAITING",
                 "good_reps": self.good_reps, "bad_reps": self.bad_reps, 
                 "half_reps": self.half_reps, "total_reps": total_reps,
-                "form_score": 0, "feedback": "Step into camera view (side profile)",
+                "form_score": 0, "feedback": "Show your arm and torso (side view)",
                 "elbow_angle": 0.0
             }
 
@@ -108,34 +110,36 @@ class DumbbellBicepsCurlsTracker:
         active_knee = r_knee if r_vis > l_vis else l_knee
         active_ankle = r_ankle if r_vis > l_vis else l_ankle
 
+        # Joint angles
         elbow_angle = calculate_angle(active_shoulder, active_elbow, active_wrist)
+        upper_arm_angle = calculate_angle(active_hip, active_shoulder, active_elbow)
+        knee_angle = calculate_angle(active_hip, active_knee, active_ankle)
         
-        if active_ankle.visibility > 0.35:
-            knee_angle = calculate_angle(active_hip, active_knee, active_ankle)
-        else:
-            knee_angle = 175.0
-
         upper_arm_len = np.sqrt((active_shoulder.x - active_elbow.x)**2 + (active_shoulder.y - active_elbow.y)**2)
         if upper_arm_len == 0:
             upper_arm_len = 0.25
 
         ear_shoulder_dist = abs(active_shoulder.y - active_ear.y)
+        shoulder_hip_dist = abs(active_hip.y - active_shoulder.y)
 
         # ---------------------------------------------------------
         # 1. SETUP GUARD
         # ---------------------------------------------------------
-        # Arm hanging down (> 130 deg)
         if elbow_angle > 130:
             self.extended_frames += 1
         else:
             self.extended_frames = 0
 
-        if self.extended_frames > 5: 
+        if self.extended_frames > 6: 
             self.is_ready = True
             if self.baseline_ear_shoulder_dist is None:
                 self.baseline_ear_shoulder_dist = ear_shoulder_dist
+            if self.baseline_shoulder_hip_dist is None:
+                self.baseline_shoulder_hip_dist = shoulder_hip_dist
             if self.baseline_knee_angle is None:
                 self.baseline_knee_angle = knee_angle
+            else:
+                self.baseline_knee_angle = 0.9 * self.baseline_knee_angle + 0.1 * knee_angle
 
         if not self.is_ready:
             self.state = "WAITING"
@@ -156,76 +160,74 @@ class DumbbellBicepsCurlsTracker:
         # 3. KINEMATIC TRIPWIRES
         # ---------------------------------------------------------
         if self.state in ["CURLING", "TOP"]:
-            # A. Upper Arm Hike:
-            elevation_offset = (active_elbow.y - active_shoulder.y) / upper_arm_len
-            if elevation_offset < 0.16:
+            # A. Shoulder-to-Elbow Elevation & Forward Swing
+            vertical_drop_ratio = (active_elbow.y - active_shoulder.y) / upper_arm_len
+            is_elevating = (upper_arm_angle > 15.0) or (vertical_drop_ratio < 0.30)
+            
+            if is_elevating:
                 self.elevation_frames += 1
-                if self.elevation_frames >= 4:
+                if self.elevation_frames >= 2:
                     self.elbow_stayed_down = False
             else:
                 self.elevation_frames = 0
 
-            # B. Shoulder Shrug:
+            # B. Shoulder Shrug Check
             if self.baseline_ear_shoulder_dist is not None:
-                if ear_shoulder_dist < (self.baseline_ear_shoulder_dist * 0.60):
+                ear_compressed = ear_shoulder_dist < (self.baseline_ear_shoulder_dist * 0.85)
+                if ear_compressed:
                     self.shrug_frames += 1
-                    if self.shrug_frames >= 4:
+                    if self.shrug_frames >= 3:
                         self.shoulder_not_shrugged = False
                 else:
-                    self.shrug_frames = 0
+                    self.shrug_frames = max(0, self.shrug_frames - 1)
 
-            # C. Leg Bounce:
-            if knee_angle < 150 and self.baseline_knee_angle is not None:
-                if (self.baseline_knee_angle - knee_angle) > 25:
-                    self.bounce_frames += 1
-                    if self.bounce_frames >= 4:
-                        self.no_leg_bounce = False
-                else:
-                    self.bounce_frames = 0
-            else:
-                self.bounce_frames = 0
-
-            # D. Torso Lean-Back:
+            # C. Torso Lean-Back / Spine Heave
             torso_sway = abs(active_shoulder.x - active_hip.x) / upper_arm_len
-            if torso_sway > 0.70:
+            if torso_sway > 0.75:
                 self.torso_frames += 1
-                if self.torso_frames >= 4:
+                if self.torso_frames >= 5:
                     self.torso_stable = False
             else:
                 self.torso_frames = 0
 
+            # D. Knee Bounce / Leg-Drive Momentum (Sets advisory warning)
+            if self.baseline_knee_angle is not None:
+                knee_deflection = abs(knee_angle - self.baseline_knee_angle)
+                if knee_deflection > 14.0:
+                    self.knee_frames += 1
+                    if self.knee_frames >= 3:
+                        self.knee_bounce_warning = True
+                else:
+                    self.knee_frames = max(0, self.knee_frames - 1)
+
             self.min_elbow_angle = min(self.min_elbow_angle, elbow_angle)
 
         # ---------------------------------------------------------
-        # 4. STATE MACHINE (Flexible Transitions)
+        # 4. STATE MACHINE (Wrist to Chest Flow)
         # ---------------------------------------------------------
         if self.state == "WAITING" and self.is_ready:
             self.state = "EXTENDED"
             self.current_feedback = "Curl the weight up!"
 
-        # Initiate curl
         elif self.state in ["EXTENDED", "LOWERING"] and elbow_angle < 125:
             self.state = "CURLING"
             self.min_elbow_angle = elbow_angle
             self.reversal_frames = 0
             self.current_feedback = "Curl up to your chest..."
 
-        # Peak contraction: Relaxed to <= 75 deg
         elif self.state == "CURLING" and elbow_angle <= 75:
             self.state = "TOP"
             self.peak_contraction_reached = True
             self.half_curl_reached = True
             self.current_feedback = "Good squeeze! Lower the weight."
 
-        # Half rep check: Curled past 105 deg, then reversed back down by > 8 deg
-        elif self.state == "CURLING" and elbow_angle <= 105 and (elbow_angle - self.min_elbow_angle) > 8:
+        elif self.state == "CURLING" and (80 <= self.min_elbow_angle <= 95) and (elbow_angle - self.min_elbow_angle) > 8:
             self.reversal_frames += 1
             if self.reversal_frames >= 3:
                 self.half_curl_reached = True
                 self.state = "LOWERING"
                 self.current_feedback = "Half rep: Lowering arm early..."
 
-        # Lowering weight
         elif self.state == "TOP" and elbow_angle > 80:
             self.state = "LOWERING"
             self.current_feedback = "Lower arm down..."
@@ -243,20 +245,17 @@ class DumbbellBicepsCurlsTracker:
             self.prev_elbow_angle = None
 
         # ---------------------------------------------------------
-        # 5. REP COMPLETION (Accessible from ANY active state once >= 130 deg)
+        # 5. REP COMPLETION
         # ---------------------------------------------------------
         if self.state in ["LOWERING", "TOP", "CURLING"] and (self.peak_contraction_reached or self.half_curl_reached) and elbow_angle >= 130:
             is_bad_rep = False
             
-            # Hard Form Violations
+            # Form Cheats First (Invalidates the rep)
             if not self.elbow_stayed_down:
-                self.current_feedback = "No rep: Keep elbows down! Do not lift arm toward chest."
+                self.current_feedback = "No rep: Keep elbows pinned down! Do not lift arm forward or up."
                 is_bad_rep = True
             elif not self.shoulder_not_shrugged:
                 self.current_feedback = "No rep: Relax your traps! Do not shrug shoulders up."
-                is_bad_rep = True
-            elif not self.no_leg_bounce:
-                self.current_feedback = "No rep: Strict curl only! Do not bounce with your knees."
                 is_bad_rep = True
             elif not self.torso_stable:
                 self.current_feedback = "No rep: Do not heave or lean back with your spine."
@@ -267,13 +266,18 @@ class DumbbellBicepsCurlsTracker:
                 self.bad_reps += 1
             elif self.peak_contraction_reached:
                 self.good_reps += 1
-                if self.fast_descent_warning:
+                # Priority advisory messaging
+                if self.knee_bounce_warning:
+                    self.current_feedback = "Good rep! Reminder: Keep knees steady, avoid leg drive."
+                elif self.fast_descent_warning:
                     self.current_feedback = "Good rep! Reminder: Lower it slower for better muscle growth."
                 else:
                     self.current_feedback = "Great curl! Clean rep."
             elif self.half_curl_reached:
                 self.half_reps += 1
-                if self.fast_descent_warning:
+                if self.knee_bounce_warning:
+                    self.current_feedback = "Half Rep! Reminder: Curl to chest and keep knees steady."
+                elif self.fast_descent_warning:
                     self.current_feedback = "Half Rep! Reminder: Lower it slower & curl to chest."
                 else:
                     self.current_feedback = "Counted as Half Rep: Curl all the way to chest!"
@@ -290,30 +294,30 @@ class DumbbellBicepsCurlsTracker:
             
             self.elevation_frames = 0
             self.shrug_frames = 0
-            self.bounce_frames = 0
             self.torso_frames = 0
+            self.knee_frames = 0
             self.drop_frames = 0
             
             self.elbow_stayed_down = True
             self.shoulder_not_shrugged = True
-            self.no_leg_bounce = True
             self.torso_stable = True
+            self.knee_bounce_warning = False
             self.fast_descent_warning = False
             self.prev_elbow_angle = None
             
             if self.baseline_ear_shoulder_dist is not None:
-                self.baseline_ear_shoulder_dist = 0.8 * self.baseline_ear_shoulder_dist + 0.2 * ear_shoulder_dist
-            if self.baseline_knee_angle is not None:
-                self.baseline_knee_angle = 0.8 * self.baseline_knee_angle + 0.2 * knee_angle
+                self.baseline_ear_shoulder_dist = 0.85 * self.baseline_ear_shoulder_dist + 0.15 * ear_shoulder_dist
+            if self.baseline_shoulder_hip_dist is not None:
+                self.baseline_shoulder_hip_dist = 0.85 * self.baseline_shoulder_hip_dist + 0.15 * shoulder_hip_dist
                 
             self.frame_buffer.clear()
 
         # Dynamic Scoring
         form_score = max(0, min(100, int(((150 - elbow_angle) / 80) * 100)))
-        if not self.elbow_stayed_down: form_score -= 25
+        if not self.elbow_stayed_down: form_score -= 30
         if not self.shoulder_not_shrugged: form_score -= 20
-        if not self.no_leg_bounce: form_score -= 20
         if not self.torso_stable: form_score -= 20
+        if self.knee_bounce_warning: form_score -= 10
         if self.fast_descent_warning: form_score -= 8
         if self.half_curl_reached and not self.peak_contraction_reached: form_score -= 10
         form_score = max(0, form_score)

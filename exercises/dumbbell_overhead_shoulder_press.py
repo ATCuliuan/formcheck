@@ -10,19 +10,22 @@ class DumbbellOverheadShoulderPressTracker:
         self.state = "WAITING"
         self.good_reps = 0
         self.bad_reps = 0
-        self.half_reps = 0                 # Kept for camera test harness compatibility
+        self.half_reps = 0                 
 
         self.lockout_reached = False       # Full overhead lockout (elbow angle >= 155 deg)
+        self.half_press_reached = False    # Incomplete press (reversed before full lockout)
+        self.started_from_racked = False   # Press must initiate from a genuine shoulder rack
+        self.straight_arm_swing = False    # Catches swinging straight arms upward from waist/hips
         self.max_reach_angle = 0.0         # Tracks peak extension during upward phase
+        self.reversal_frames = 0           # Debounce counter for downward reversal
         
         # Front View Form Tripwires
         self.arm_path_aligned = True       # Catches flaring elbows excessively away from body
         self.torso_upright = True          # Catches lateral side bending
         self.arms_even = True              # Catches asymmetric pressing
-        self.started_from_rack = True      # Catches front raises or starting below shoulder level
         self.ml_posture_maintained = True
 
-        # Advisory / Warning Flags (Does not invalidate a good rep)
+        # Advisory / Warning Flags
         self.knee_bounce_warning = False   # Catches using leg-drive / push press momentum
         self.baseline_knee_angle = None
         self.baseline_hip_y = None         # Baseline for vertical hip dip detection
@@ -32,12 +35,11 @@ class DumbbellOverheadShoulderPressTracker:
         self.torso_frames = 0
         self.even_frames = 0
         self.knee_frames = 0
-        self.rack_violation_frames = 0
 
         self.is_ready = False
         self.racked_frames = 0
 
-        self.current_feedback = "Bring weights to shoulder level"
+        self.current_feedback = "Bring dumbbells to shoulder level"
         self.mp_pose = mp.solutions.pose
 
         self.sequence_length = 30
@@ -97,7 +99,7 @@ class DumbbellOverheadShoulderPressTracker:
                 "state": "WAITING",
                 "good_reps": self.good_reps, "bad_reps": self.bad_reps,
                 "half_reps": self.half_reps, "total_reps": total_reps,
-                "feedback": "Face camera directly: show full torso and arms",
+                "form_score": 0, "feedback": "Face camera directly: show full torso and arms",
                 "elbow_angle": 0.0, "hip_angle": 0.0
             }
 
@@ -115,39 +117,34 @@ class DumbbellOverheadShoulderPressTracker:
             r_knee_angle = calculate_angle(r_hip, r_knee, r_ankle)
             current_knee_angle = min(l_knee_angle, r_knee_angle)
 
-        # Scale reference: Shoulder Width
-        shoulder_width = abs(l_shoulder.x - r_shoulder.x)
-        if shoulder_width == 0:
-            shoulder_width = 0.30
-
-        # Midpoint references
+        shoulder_width = abs(l_shoulder.x - r_shoulder.x) or 0.30
         current_hip_y = (l_hip.y + r_hip.y) / 2.0
         avg_shoulder_y = (l_shoulder.y + r_shoulder.y) / 2.0
-        max_wrist_y = max(l_wrist.y, r_wrist.y)  # Lower hand on screen
 
-        # ---------------------------------------------------------
-        # 1. SETUP GUARD (Weights strictly racked near shoulder level)
-        # ---------------------------------------------------------
-        # Both wrists must be above chest/mid-rib level (smaller Y = higher up)
-        # and elbows must be bent (< 115 deg)
-        wrists_at_shoulders = max_wrist_y < (avg_shoulder_y + 0.12) and (max_wrist_y < current_hip_y - 0.10)
-        is_racked = (max_elbow_angle < 115) and wrists_at_shoulders
+        # ---------------------------------------------------------------------
+        # 1. SETUP GUARD (Flexible & Reliable Starting Stance)
+        # ---------------------------------------------------------------------
+        # 1. Elbows bent in racked range (under 120 deg, not straight)
+        elbows_bent = max_elbow_angle <= 120.0
+        # 2. Wrists are above the waist/hips (not hanging down at the sides)
+        wrists_above_waist = (l_wrist.y < (current_hip_y - 0.06)) and (r_wrist.y < (current_hip_y - 0.06))
 
-        if is_racked:
+        is_proper_racked_stance = elbows_bent and wrists_above_waist
+
+        if is_proper_racked_stance:
             self.racked_frames += 1
         else:
             self.racked_frames = 0
 
-        if self.racked_frames > 6:
+        # 5 consecutive frames is enough to confirm starting posture
+        if self.racked_frames > 5:
             self.is_ready = True
             
-            # Calibrate baseline hip Y
             if self.baseline_hip_y is None:
                 self.baseline_hip_y = current_hip_y
             else:
                 self.baseline_hip_y = 0.9 * self.baseline_hip_y + 0.1 * current_hip_y
 
-            # Calibrate baseline knee angle
             if current_knee_angle is not None:
                 if self.baseline_knee_angle is None:
                     self.baseline_knee_angle = current_knee_angle
@@ -157,61 +154,41 @@ class DumbbellOverheadShoulderPressTracker:
         if not self.is_ready:
             self.state = "WAITING"
             self.frame_buffer.clear()
+            self.started_from_racked = False
             return {
                 "exercise": "Dumbbell Overhead Press",
                 "state": self.state,
                 "good_reps": self.good_reps, "bad_reps": self.bad_reps,
                 "half_reps": self.half_reps, "total_reps": total_reps,
-                "feedback": "Rack dumbbells at shoulder level to begin",
+                "form_score": 0, "feedback": "Bring dumbbells to shoulder level to begin",
                 "elbow_angle": round(min_elbow_angle, 1), "hip_angle": 0.0
             }
 
-        # 2. ST-GCN Buffer & Inference
+        # 2. ST-GCN Buffer
         frame_coords = self._extract_body_keypoints(landmarks)
         self.frame_buffer.append(frame_coords)
 
-        if self.interpreter and len(self.frame_buffer) == self.sequence_length:
-            try:
-                seq = np.expand_dims(np.array(self.frame_buffer, dtype=np.float32), axis=0)
-                self.interpreter.set_tensor(self.input_details[0]['index'], seq)
-                self.interpreter.invoke()
-                output_data = self.interpreter.get_tensor(self.output_details[0]['index'])[0]
-
-                exp_vals = np.exp(output_data - np.max(output_data))
-                probs = exp_vals / np.sum(exp_vals)
-
-                if probs[0] > 0.85 and self.state in ["PRESSING", "TOP"]:
-                    self.ml_posture_maintained = False
-            except Exception:
-                pass
-
-        # ---------------------------------------------------------
+        # ---------------------------------------------------------------------
         # 3. KINEMATIC TRIPWIRES
-        # ---------------------------------------------------------
+        # ---------------------------------------------------------------------
         if self.state in ["RACKED", "PRESSING", "TOP", "LOWERING"]:
-            # A. Front Raise Trap: Wrists dropped significantly below shoulders during movement
-            # Catches swinging up from waist/hips
-            if max_wrist_y > (avg_shoulder_y + 0.20):
-                self.rack_violation_frames += 1
-                if self.rack_violation_frames >= 4:
-                    self.started_from_rack = False
-            else:
-                self.rack_violation_frames = max(0, self.rack_violation_frames - 1)
+            # A. Catch Straight-Arm Swing (Shining hands straight up from waist with straight arms)
+            # If hands are below chest level while arms are already extended (> 135 deg)
+            hands_low = (l_wrist.y > (avg_shoulder_y + 0.05)) or (r_wrist.y > (avg_shoulder_y + 0.05))
+            if hands_low and (min_elbow_angle > 135.0):
+                self.straight_arm_swing = True
 
-            # B. Elbow Flare Check:
+            # B. Excessive Elbow Flare
             l_elbow_flare = abs(l_elbow.x - l_shoulder.x) / shoulder_width
             r_elbow_flare = abs(r_elbow.x - r_shoulder.x) / shoulder_width
-
-            is_flaring = (l_elbow_flare > 0.48) or (r_elbow_flare > 0.48)
-            
-            if is_flaring:
+            if (l_elbow_flare > 0.45) or (r_elbow_flare > 0.45):
                 self.flare_frames += 1
                 if self.flare_frames >= 3:
                     self.arm_path_aligned = False
             else:
                 self.flare_frames = max(0, self.flare_frames - 1)
 
-            # C. Lateral Spine Sway:
+            # C. Lateral Spine Sway
             mid_shoulder_x = (l_shoulder.x + r_shoulder.x) / 2.0
             mid_hip_x = (l_hip.x + r_hip.x) / 2.0
             if abs(mid_shoulder_x - mid_hip_x) > 0.09:
@@ -221,7 +198,7 @@ class DumbbellOverheadShoulderPressTracker:
             else:
                 self.torso_frames = 0
 
-            # D. Asymmetric Lag:
+            # D. Asymmetric Pressing
             if abs(l_wrist.y - r_wrist.y) > 0.14:
                 self.even_frames += 1
                 if self.even_frames >= 3:
@@ -229,15 +206,13 @@ class DumbbellOverheadShoulderPressTracker:
             else:
                 self.even_frames = 0
 
-            # E. Knee Bounce / Leg Drive Detection:
+            # E. Knee Bounce / Push-Press Momentum
             hip_drop_normalized = (current_hip_y - self.baseline_hip_y) / shoulder_width if self.baseline_hip_y else 0.0
-
             knee_deflection = 0.0
             if self.baseline_knee_angle is not None and current_knee_angle is not None:
                 knee_deflection = abs(current_knee_angle - self.baseline_knee_angle)
 
             is_bouncing = (hip_drop_normalized > 0.06) or (knee_deflection > 6.0)
-
             if is_bouncing and self.state in ["RACKED", "PRESSING"]:
                 self.knee_frames += 1
                 if self.knee_frames >= 2:
@@ -247,43 +222,50 @@ class DumbbellOverheadShoulderPressTracker:
 
             self.max_reach_angle = max(self.max_reach_angle, min_elbow_angle)
 
-        # ---------------------------------------------------------
-        # 4. STATE MACHINE (Full Range Enforcement)
-        # ---------------------------------------------------------
+        # ---------------------------------------------------------------------
+        # 4. STATE MACHINE
+        # ---------------------------------------------------------------------
         if self.state == "WAITING" and self.is_ready:
             self.state = "RACKED"
+            self.started_from_racked = True
             self.current_feedback = "Press dumbbells overhead!"
 
-        # Start pressing: arms extend past 100 deg, wrists must be moving above shoulders
-        elif self.state in ["RACKED", "LOWERING"] and min_elbow_angle > 100 and max_wrist_y < avg_shoulder_y:
-            self.state = "PRESSING"
-            self.max_reach_angle = min_elbow_angle
-            self.current_feedback = "Drive weights straight up..."
+        elif self.state == "RACKED":
+            if is_proper_racked_stance:
+                self.started_from_racked = True
+            if min_elbow_angle > 110:
+                self.state = "PRESSING"
+                self.max_reach_angle = min_elbow_angle
+                self.reversal_frames = 0
+                self.current_feedback = "Drive weights straight up..."
 
-        # Full Lockout (Both arms overhead >= 155 deg)
+        # Full Lockout (>= 155 deg overhead)
         elif self.state == "PRESSING" and min_elbow_angle >= 155:
-            self.state = "TOP"
-            self.lockout_reached = True
-            self.current_feedback = "Full lockout! Lower under control."
+            if (l_wrist.y < avg_shoulder_y) and (r_wrist.y < avg_shoulder_y):
+                self.state = "TOP"
+                self.lockout_reached = True
+                self.current_feedback = "Full lockout! Lower under control."
 
-        # Early return prior to reaching full lockout
-        elif self.state == "PRESSING" and (self.max_reach_angle - min_elbow_angle) > 8:
-            self.state = "LOWERING"
-            self.current_feedback = "Perform a full rep! Press all the way to full lockout."
+        # Half Rep Reversal
+        elif self.state == "PRESSING" and (115 <= self.max_reach_angle < 155) and (self.max_reach_angle - min_elbow_angle) > 8:
+            self.reversal_frames += 1
+            if self.reversal_frames >= 2:
+                self.half_press_reached = True
+                self.state = "LOWERING"
+                self.current_feedback = "Incomplete rep: Lowering arms early..."
 
         elif self.state == "TOP" and max_elbow_angle < 140:
             self.state = "LOWERING"
             self.current_feedback = "Lower weights down..."
 
-        # ---------------------------------------------------------
-        # 5. REP COMPLETION & EVALUATION
-        # ---------------------------------------------------------
-        if self.state in ["LOWERING", "TOP", "PRESSING"] and max_elbow_angle <= 115:
+        # ---------------------------------------------------------------------
+        # 5. REP COMPLETION: Return to Racked (<= 120 deg)
+        # ---------------------------------------------------------------------
+        if self.state in ["LOWERING", "TOP", "PRESSING"] and (self.lockout_reached or self.half_press_reached) and max_elbow_angle <= 120:
             is_bad_rep = False
 
-            # Form Cheats First (Invalidates the rep)
-            if not self.started_from_rack:
-                self.current_feedback = "No rep: Start and end at shoulder level! Do not swing from hips."
+            if self.straight_arm_swing or not self.started_from_racked:
+                self.current_feedback = "No rep: Do not swing arms from waist! Press from shoulder level."
                 is_bad_rep = True
             elif not self.arm_path_aligned:
                 self.current_feedback = "No rep: Keep elbows in! Do not flare arms wide outward."
@@ -294,11 +276,11 @@ class DumbbellOverheadShoulderPressTracker:
             elif not self.arms_even:
                 self.current_feedback = "No rep: Press evenly! One arm lagged behind."
                 is_bad_rep = True
-            elif not self.ml_posture_maintained:
-                self.current_feedback = "No rep: AI flagged poor overhead posture."
+            elif self.half_press_reached and not self.lockout_reached:
+                self.current_feedback = "No rep: Incomplete range! Press all the way to full lockout."
                 is_bad_rep = True
             elif not self.lockout_reached:
-                self.current_feedback = "No rep: Perform a full rep! Press all the way to full lockout."
+                self.current_feedback = "No rep: Movement was too shallow."
                 is_bad_rep = True
 
             # Rep Evaluation
@@ -307,32 +289,43 @@ class DumbbellOverheadShoulderPressTracker:
             else:
                 self.good_reps += 1
                 if self.knee_bounce_warning:
-                    self.current_feedback = "Good rep! Reminder: Strict press only, avoid leg bounce."
+                    self.current_feedback = "Good rep! Strict press only, avoid leg bounce."
                 else:
-                    self.current_feedback = "Great press! Full lockout."
+                    self.current_feedback = "Clean press! Full lockout."
 
             # Reset flags for next rep
             self.state = "RACKED"
             self.lockout_reached = False
+            self.half_press_reached = False
+            self.started_from_racked = is_proper_racked_stance
+            self.straight_arm_swing = False
             self.max_reach_angle = 0.0
+            self.reversal_frames = 0
             
             self.flare_frames = 0
             self.torso_frames = 0
             self.even_frames = 0
             self.knee_frames = 0
-            self.rack_violation_frames = 0
 
             self.arm_path_aligned = True
             self.torso_upright = True
             self.arms_even = True
-            self.started_from_rack = True
-            self.ml_posture_maintained = True
             self.knee_bounce_warning = False
 
             if self.baseline_hip_y is not None:
                 self.baseline_hip_y = 0.85 * self.baseline_hip_y + 0.15 * current_hip_y
 
             self.frame_buffer.clear()
+
+        # Dynamic Scoring
+        form_score = max(0, min(100, int((min_elbow_angle / 160) * 100)))
+        if not self.arm_path_aligned: form_score -= 30
+        if not self.torso_upright: form_score -= 20
+        if not self.arms_even: form_score -= 20
+        if self.straight_arm_swing: form_score -= 35
+        if self.knee_bounce_warning: form_score -= 10
+        if self.half_press_reached and not self.lockout_reached: form_score -= 30
+        form_score = max(0, form_score)
 
         return {
             "exercise": "Dumbbell Overhead Press",
@@ -341,6 +334,7 @@ class DumbbellOverheadShoulderPressTracker:
             "bad_reps": self.bad_reps,
             "half_reps": self.half_reps,
             "total_reps": total_reps,
+            "form_score": form_score,
             "feedback": self.current_feedback,
             "elbow_angle": round(min_elbow_angle, 1),
             "hip_angle": 0.0

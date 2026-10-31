@@ -1,7 +1,7 @@
 import os
 from collections import deque
 import numpy as np
-from ai_edge_litert.interpreter import Interpreter
+from exercises.torch_model import load_st_gcn_model
 import mediapipe as mp
 from core.kinematics import calculate_angle
 
@@ -10,18 +10,19 @@ class DeclinePushupTracker:
         self.state = "WAITING"   
         self.good_reps = 0
         self.bad_reps = 0
-        self.half_reps = 0                 # Kept for camera test harness compatibility
+        self.half_reps = 0                 
         
-        self.depth_reached = False         # Strict full ROM: Elbow <= 90 deg
-        self.min_elbow_angle = 180.0       # Tracks peak concentric/eccentric depth
+        self.depth_reached = False         
+        self.min_elbow_angle = 180.0       
         
         # Posture Tripwires (SIDE / SAGITTAL VIEW)
-        self.is_decline_elevation = True   # Feet elevated higher than shoulders (ankle.y < shoulder.y)
-        self.core_maintained = True        # Catches hip sag / banana back
-        self.no_pike = True                # Catches butt shooting up into a mountain pike
-        self.neck_neutral = True           # Catches poking chin/head down to fake chest depth
-        self.controlled_descent = True     # Catches free-falling to the floor
-        self.ml_posture_maintained = True  # ST-GCN AI flag
+        self.is_decline_elevation = True   
+        self.core_maintained = True        
+        self.no_pike = True                
+        self.neck_neutral = True           
+        self.controlled_descent = True     
+        self.hands_aligned = True          # <--- NEW: Hand alignment tripwire
+        self.ml_posture_maintained = True  
 
         # Debounce counters
         self.sag_frames = 0
@@ -29,6 +30,7 @@ class DeclinePushupTracker:
         self.flat_frames = 0
         self.neck_frames = 0
         self.drop_frames = 0
+        self.hand_misalign_frames = 0      # <--- NEW: Hand debounce counter
         self.plank_frames = 0
         
         self.prev_elbow_angle = None
@@ -42,22 +44,9 @@ class DeclinePushupTracker:
         self.sequence_length = 30
         self.frame_buffer = deque(maxlen=self.sequence_length)
         
-        # Load Native LiteRT Model
-        self.interpreter = None
-        model_path = os.path.join("models", "tflite", "st_gcn_decline_pushup.tflite")
-
-        if os.path.exists(model_path):
-            try:
-                self.interpreter = Interpreter(model_path=model_path)
-                self.interpreter.allocate_tensors()
-                self.input_details = self.interpreter.get_input_details()
-                self.output_details = self.interpreter.get_output_details()
-                print(f"✅ ST-GCN TFLite Decline Pushup model loaded from {model_path}")
-            except Exception as e:
-                print(f"⚠️ Error loading TFLite Decline Pushup weights: {e}")
-                self.interpreter = None
-        else:
-            print(f"⚠️ ST-GCN TFLite model not found at {model_path}")
+        # Load PyTorch model
+        model_path = os.path.join("models", "pt", "st_gcn_decline_pushup.pt")
+        self.model = load_st_gcn_model(model_path)
 
     def _extract_body_keypoints(self, landmarks):
         target_indices = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
@@ -123,7 +112,6 @@ class DeclinePushupTracker:
         # ---------------------------------------------------------
         # 1. SETUP GUARD (Arms locked & feet elevated above shoulders)
         # ---------------------------------------------------------
-        # In MediaPipe, smaller Y = higher on screen. Feet elevated means ankle.y < shoulder.y
         is_feet_elevated = active_ankle.y < (active_shoulder.y - 0.03)
         is_plank = (elbow_angle > 150) and (body_angle > 150) and is_feet_elevated
 
@@ -159,14 +147,12 @@ class DeclinePushupTracker:
         frame_coords = self._extract_body_keypoints(landmarks)
         self.frame_buffer.append(frame_coords)
 
-        if self.interpreter and len(self.frame_buffer) == self.sequence_length:
+        if self.model and len(self.frame_buffer) == self.sequence_length:
             try:
                 seq = np.array(self.frame_buffer, dtype=np.float32)
                 tensor_input = np.expand_dims(seq, axis=0) 
                 
-                self.interpreter.set_tensor(self.input_details[0]['index'], tensor_input)
-                self.interpreter.invoke()
-                output_data = self.interpreter.get_tensor(self.output_details[0]['index'])
+                output_data = self.model.predict(tensor_input)
                 
                 predicted_class = np.argmax(output_data, axis=1)[0]
                 if predicted_class == 0 and self.state != "PLANKING":
@@ -178,7 +164,7 @@ class DeclinePushupTracker:
         # 3. KINEMATIC FORM TRIPWIRES
         # ---------------------------------------------------------
         if self.state in ["DESCENDING", "BOTTOM", "ASCENDING"]:
-            # A. Feet on floor cheat (Ankles drop to or below shoulder horizontal plane)
+            # A. Feet on floor cheat
             if active_ankle.y > active_shoulder.y:
                 self.flat_frames += 1
                 if self.flat_frames >= 4:
@@ -186,7 +172,7 @@ class DeclinePushupTracker:
             else:
                 self.flat_frames = max(0, self.flat_frames - 1)
 
-            # B. Core Sagging (Banana Back: Hips drop below spinal axis)
+            # B. Core Sagging (Banana Back)
             if active_hip.y > active_shoulder.y and body_angle < 150:
                 self.sag_frames += 1
                 if self.sag_frames >= 4:
@@ -194,7 +180,7 @@ class DeclinePushupTracker:
             else:
                 self.sag_frames = max(0, self.sag_frames - 1)
 
-            # C. Hip Piking (Glutes shoot up into a peak/mountain shape)
+            # C. Hip Piking
             if active_hip.y < active_shoulder.y and body_angle < 140:
                 self.pike_frames += 1
                 if self.pike_frames >= 4:
@@ -202,7 +188,7 @@ class DeclinePushupTracker:
             else:
                 self.pike_frames = max(0, self.pike_frames - 1)
 
-            # D. Neck Craning (Poking chin/head down to fake chest depth)
+            # D. Neck Craning
             if neck_angle < 130:
                 self.neck_frames += 1
                 if self.neck_frames >= 4:
@@ -210,10 +196,24 @@ class DeclinePushupTracker:
             else:
                 self.neck_frames = max(0, self.neck_frames - 1)
 
+            # E. Hand Asymmetry / Stagger Check (NEW)
+            # Checks if both hands are visible, then compares vertical level (Y) and anterior/posterior stagger (X)
+            if l_wrist.visibility > 0.45 and r_wrist.visibility > 0.45:
+                vertical_wrist_diff = abs(l_wrist.y - r_wrist.y)
+                horizontal_wrist_stagger = abs(l_wrist.x - r_wrist.x)
+
+                # Staggered hands along floor (X) or uneven height (Y)
+                if vertical_wrist_diff > 0.08 or horizontal_wrist_stagger > 0.12:
+                    self.hand_misalign_frames += 1
+                    if self.hand_misalign_frames >= 4:
+                        self.hands_aligned = False
+                else:
+                    self.hand_misalign_frames = max(0, self.hand_misalign_frames - 1)
+
             self.min_elbow_angle = min(self.min_elbow_angle, elbow_angle)
 
         # ---------------------------------------------------------
-        # 4. STATE MACHINE (NO HALF REPS - FULL ROM ONLY)
+        # 4. STATE MACHINE (FULL ROM)
         # ---------------------------------------------------------
         if self.state == "WAITING" and self.is_ready:
             self.state = "PLANKING"
@@ -226,14 +226,12 @@ class DeclinePushupTracker:
             if self.post_rep_timer == 0:
                 self.current_feedback = "Lower chest to 90 degrees..."
 
-        # Full ROM: Elbows reach 90 degrees
         elif self.state == "DESCENDING" and elbow_angle <= 90:
             self.depth_reached = True
             self.state = "BOTTOM"
             if self.post_rep_timer == 0:
                 self.current_feedback = "Depth hit! Drive floor away."
 
-        # Incomplete rep: Reverses upward before hitting 90 deg (strict no half-reps)
         elif self.state == "DESCENDING" and (elbow_angle - self.min_elbow_angle) > 8:
             self.state = "ASCENDING"
             self.current_feedback = "Perform a full rep! Lower chest all the way to 90°."
@@ -264,6 +262,9 @@ class DeclinePushupTracker:
             # Form Cheats Evaluated First
             if not self.is_decline_elevation:
                 self.current_feedback = "No rep: Elevate your feet! Feet dropped to floor level."
+                is_bad_rep = True
+            elif not self.hands_aligned:
+                self.current_feedback = "No rep: Uneven hand placement! Align both hands evenly."
                 is_bad_rep = True
             elif not self.core_maintained:
                 self.current_feedback = "No rep: Core collapsed! Do not sag hips."
@@ -298,6 +299,7 @@ class DeclinePushupTracker:
             self.depth_reached = False
             self.min_elbow_angle = 180.0
             self.is_decline_elevation = True
+            self.hands_aligned = True          # Reset hand flag
             self.core_maintained = True
             self.no_pike = True
             self.neck_neutral = True
@@ -309,6 +311,7 @@ class DeclinePushupTracker:
             self.flat_frames = 0
             self.neck_frames = 0
             self.drop_frames = 0
+            self.hand_misalign_frames = 0      # Reset hand counter
             self.frame_buffer.clear()
 
         # Dynamic Scoring
@@ -316,6 +319,7 @@ class DeclinePushupTracker:
         if not self.core_maintained: form_score -= 30
         if not self.no_pike: form_score -= 25
         if not self.is_decline_elevation: form_score -= 35
+        if not self.hands_aligned: form_score -= 20
         if not self.neck_neutral: form_score -= 15
         if not self.controlled_descent: form_score -= 20
         if not self.depth_reached: form_score -= 25

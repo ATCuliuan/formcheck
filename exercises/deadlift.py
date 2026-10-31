@@ -1,7 +1,7 @@
 import os
 from collections import deque
 import numpy as np
-from ai_edge_litert.interpreter import Interpreter
+from exercises.torch_model import load_st_gcn_model
 import mediapipe as mp
 from core.kinematics import calculate_angle
 
@@ -12,7 +12,8 @@ class DeadliftTracker:
         self.bad_reps = 0
         self.half_reps = 0                 # Kept for camera test harness compatibility
 
-        self.depth_reached = False         # Full depth: hinge <= 118° or wrists pass knee level
+        self.depth_reached = False         # Full depth: strict hip hinge <= 118° AND wrists passing below kneecap
+        self.was_half_rep = False          # Latches an early reversal to enforce a bad rep
         self.min_hinge_angle = 180.0       # Tracks peak hinge depth
         
         # Biomechanical Tripwires (SAGITTAL / SIDE VIEW)
@@ -45,18 +46,9 @@ class DeadliftTracker:
         self.sequence_length = 30
         self.frame_buffer = deque(maxlen=self.sequence_length)
 
-        # Load LiteRT Model
-        self.interpreter = None
-        model_path = os.path.join("models", "tflite", "st_gcn_deadlift.tflite")
-
-        if os.path.exists(model_path):
-            try:
-                self.interpreter = Interpreter(model_path=model_path)
-                self.interpreter.allocate_tensors()
-                self.input_details = self.interpreter.get_input_details()
-                self.output_details = self.interpreter.get_output_details()
-            except Exception:
-                self.interpreter = None
+        # Load PyTorch model
+        model_path = os.path.join("models", "pt", "st_gcn_deadlift.pt")
+        self.model = load_st_gcn_model(model_path)
 
     def _extract_body_keypoints(self, landmarks):
         target_indices = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
@@ -153,12 +145,10 @@ class DeadliftTracker:
         frame_coords = self._extract_body_keypoints(landmarks)
         self.frame_buffer.append(frame_coords)
 
-        if self.interpreter and len(self.frame_buffer) == self.sequence_length:
+        if self.model and len(self.frame_buffer) == self.sequence_length:
             try:
                 seq = np.expand_dims(np.array(self.frame_buffer, dtype=np.float32), axis=0)
-                self.interpreter.set_tensor(self.input_details[0]['index'], seq)
-                self.interpreter.invoke()
-                output_data = self.interpreter.get_tensor(self.output_details[0]['index'])
+                output_data = self.model.predict(seq)
 
                 if np.argmax(output_data, axis=1)[0] == 0 and self.state != "STANDING":
                     self.ml_posture_maintained = False
@@ -178,14 +168,14 @@ class DeadliftTracker:
                 self.profile_frames = max(0, self.profile_frames - 1)
 
             # B. Spinal Flexion / Rounding
-            if spine_angle < 132.0:
+            if spine_angle < 130.0:
                 self.back_frames += 1
                 if self.back_frames >= 4:
                     self.back_neutral = False
             else:
                 self.back_frames = max(0, self.back_frames - 1)
 
-            # C. Squatting the deadlift (Knee bends too far forward before hips hinge)
+            # C. Squatting the deadlift (Knees forward, hips drop straight down)
             if knee_angle < 85.0:
                 self.squat_frames += 1
                 if self.squat_frames >= 4:
@@ -213,7 +203,7 @@ class DeadliftTracker:
             self.min_hinge_angle = min(self.min_hinge_angle, hinge_angle)
 
         # ---------------------------------------------------------
-        # 4. STATE MACHINE (NO HALF REPS - FULL ROM ONLY)
+        # 4. STATE MACHINE (STRICT NO HALF REPS - INVALIDATES ON EARLY REVERSAL)
         # ---------------------------------------------------------
         if self.state == "WAITING" and self.is_ready:
             self.state = "STANDING"
@@ -228,17 +218,18 @@ class DeadliftTracker:
             if self.post_rep_timer == 0:
                 self.current_feedback = "Push hips back, keep bar close..."
 
-        # Full Depth Hinge: Wrists cross knee level or hinge reaches <= 118°
-        elif self.state == "DESCENDING" and (hinge_angle <= 118.0 or active_wrist.y >= (active_knee.y - 0.01)):
+        # Full Depth Hinge: Must achieve genuine hip hinge (<= 118°) AND wrists clearly below knees
+        elif self.state == "DESCENDING" and (hinge_angle <= 118.0 or active_wrist.y > (active_knee.y + 0.02)):
             self.depth_reached = True
             self.state = "BOTTOM"
             if self.post_rep_timer == 0:
                 self.current_feedback = "Depth reached! Drive through heels and stand."
 
-        # Incomplete rep: Reversing upward before reaching knees/full hinge
-        elif self.state == "DESCENDING" and (hinge_angle - self.min_hinge_angle) > 8.0:
+        # Half rep trigger: lifter starts coming back up before depth is hit
+        elif self.state == "DESCENDING" and (hinge_angle - self.min_hinge_angle) > 7.0 and not self.depth_reached:
+            self.was_half_rep = True
             self.state = "ASCENDING"
-            self.current_feedback = "Perform a full rep! Lower weights past your knees."
+            self.current_feedback = "No rep: You reversed early! Lower weights past your knees."
 
         # Ascending out of bottom
         elif self.state == "BOTTOM" and hinge_angle > 122.0:
@@ -261,7 +252,7 @@ class DeadliftTracker:
         # ---------------------------------------------------------
         # 5. REP COMPLETION: Re-extending into standing lockout
         # ---------------------------------------------------------
-        if is_standing and hinge_angle > 155.0 and self.state in ["ASCENDING", "BOTTOM", "DESCENDING"]:
+        if is_standing and hinge_angle > 152.0 and self.state in ["ASCENDING", "BOTTOM", "DESCENDING"]:
             self.lockout_frames += 1
             if self.lockout_frames >= 3:
                 is_bad_rep = False
@@ -287,8 +278,8 @@ class DeadliftTracker:
                 elif not self.ml_posture_maintained:
                     self.current_feedback = "No rep: AI flagged spinal curvature or kinetic breakdown."
                     is_bad_rep = True
-                elif not self.depth_reached:
-                    self.current_feedback = "No rep: Incomplete range! Lower weights past knee level."
+                elif self.was_half_rep or not self.depth_reached:
+                    self.current_feedback = "No rep: Incomplete range! Lower weights fully past knees."
                     is_bad_rep = True
 
                 if is_bad_rep:
@@ -300,6 +291,7 @@ class DeadliftTracker:
                 self.post_rep_timer = 40
                 self.state = "STANDING"
                 self.depth_reached = False
+                self.was_half_rep = False
                 self.min_hinge_angle = 180.0
                 self.is_side_view = True
                 self.back_neutral = True
@@ -326,7 +318,7 @@ class DeadliftTracker:
         if not self.bar_path_close: form_score -= 20
         if not self.heels_flat: form_score -= 20
         if not self.controlled_descent: form_score -= 20
-        if not self.depth_reached and self.state == "ASCENDING": form_score -= 25
+        if (self.was_half_rep or not self.depth_reached) and self.state == "ASCENDING": form_score -= 30
         form_score = max(0, form_score)
 
         return {
