@@ -1,7 +1,7 @@
 import os
 from collections import deque
 import numpy as np
-from exercises.torch_model import load_st_gcn_model
+from core.torch_model import load_st_gcn_model
 import mediapipe as mp
 from core.kinematics import calculate_angle
 

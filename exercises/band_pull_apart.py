@@ -1,7 +1,7 @@
 import os
 from collections import deque
 import numpy as np
-from exercises.torch_model import load_st_gcn_model
+from core.torch_model import load_st_gcn_model
 import mediapipe as mp
 from core.kinematics import calculate_angle
 
@@ -174,8 +174,8 @@ class BandPullTracker:
             self.state = "RESTING"
             self.current_feedback = "Pull band apart outward!"
 
-        # Pull initiated
-        elif self.state in ["RESTING", "RETURNING"] and wrist_distance > (shoulder_width * 1.25):
+        # Pull initiated (wrist distance separates past 1.30x shoulder width)
+        elif self.state in ["RESTING", "RETURNING"] and wrist_distance > (shoulder_width * 1.30):
             self.state = "PULLING"
             self.max_wrist_dist = wrist_distance
             if self.arm_height_valid:
@@ -199,11 +199,11 @@ class BandPullTracker:
             self.state = "RETURNING"
             if self.arm_height_valid:
                 self.current_feedback = "Perform a full rep! Pull wide until band touches chest."
-
+       
         # ---------------------------------------------------------
         # 5. REP COMPLETION & EVALUATION
         # ---------------------------------------------------------
-        elif self.state in ["RETURNING", "TOP", "PULLING"] and hands_inside_body and hands_aligned:
+        if self.state in ["RETURNING", "TOP", "PULLING"] and hands_inside_body and hands_aligned:
             is_bad_rep = False
             
             if not self.arm_height_valid:

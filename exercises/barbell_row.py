@@ -1,7 +1,7 @@
 import os
 from collections import deque
 import numpy as np
-from exercises.torch_model import load_st_gcn_model
+from core.torch_model import load_st_gcn_model
 import mediapipe as mp
 from core.kinematics import calculate_angle
 
@@ -214,7 +214,7 @@ class BarbellRowTracker:
                 self.foot_align_frames = max(0, self.foot_align_frames - 1)
 
             # B. Shin Angle Scale (85° to 95°)
-            if (shin_angle_horizontal < 85.0) or (shin_angle_horizontal > 95.0):
+            if (shin_angle_horizontal < 80.0) or (shin_angle_horizontal > 100.0):
                 self.shin_frames += 1
                 if self.shin_frames >= 6:
                     self.shin_angle_proper = False
@@ -263,7 +263,7 @@ class BarbellRowTracker:
             if self.post_rep_timer == 0:
                 self.current_feedback = "Pull bar toward your lower chest/belly!"
 
-        elif self.state in ["EXTENDED", "DESCENDING"] and elbow_angle < 130:
+        elif self.state in ["EXTENDED", "DESCENDING"] and elbow_angle < 125:
             self.state = "ASCENDING"
             self.min_elbow_angle = elbow_angle
             if self.post_rep_timer == 0:
