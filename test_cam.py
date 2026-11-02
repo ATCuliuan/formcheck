@@ -1,14 +1,14 @@
 import time
 import cv2
 import mediapipe as mp
-from exercises.barbell_row import BarbellRowTracker
+from exercises.decline_pushup import DeclinePushupTracker
 
 # Initialize MediaPipe drawing tools
 mp_drawing = mp.solutions.drawing_utils
 mp_pose = mp.solutions.pose
 
 def main():
-    tracker = BarbellRowTracker()
+    tracker = DeclinePushupTracker()
     
     # Using CAP_DSHOW for reliable Windows camera access
     cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
