@@ -5,27 +5,67 @@ from ai_edge_litert.interpreter import Interpreter
 import mediapipe as mp
 from core.kinematics import calculate_angle
 
+# =====================================================================
+# TRACKER TUNING CONFIGURATION (ADJUST PARAMETERS HERE)
+# =====================================================================
+
+# 1. Setup & Starting Guard
+SETUP_ELBOW_MIN_ANGLE = 130.0       # Arm must hang extended down (> 130°)
+SETUP_MIN_READY_FRAMES = 6          # Consecutive frames hanging arm to become READY
+UNLOCK_RESET_FRAMES = 15            # Consecutive frames with arm hanging to clear LOCKED_FAULT (~0.5s)
+BASELINE_EXPONENTIAL_ALPHA = 0.85   # Weight for baseline exponential moving average
+BASELINE_NEW_SAMPLE_WEIGHT = 0.15   # Weight for new incoming baseline measurement
+
+# 2. Kinematic & Form Thresholds
+MAX_UPPER_ARM_ANGLE = 15.0          # Angle between torso and upper arm before flagging elbow flare/swing
+MIN_VERTICAL_DROP_RATIO = 0.30      # Vertical drop of elbow below shoulder / upper arm length
+SHRUG_EAR_DROP_RATIO = 0.85         # Ratio of baseline ear-to-shoulder height before flagging shrug
+MAX_TORSO_SWAY = 0.75               # Horizontal shoulder-hip displacement / upper arm length
+KNEE_BOUNCE_MAX_DEFLECTION = 14.0   # Knee angle change threshold for momentum/leg drive warning
+ECCENTRIC_DROP_SPEED_MAX = 30.0     # Angular descent speed (deg/frame) for fast negative warning
+MIN_VISIBILITY_THRESHOLD = 1.8      # Cumulative visibility score across key profile joints
+
+# 3. Curl Depth & Range of Motion
+FULL_CURL_PEAK_ANGLE = 75.0         # Maximum elbow angle required to credit a full contraction
+HALF_CURL_THRESHOLD_ANGLE = 100.0   # If arm curls to <= 100° but misses 75°, it is flagged as half-rep failure
+CURL_START_ELBOW_ANGLE = 125.0      # Moving below this angle transitions to CURLING
+LOWERING_START_ELBOW_ANGLE = 80.0   # Moving above this angle transitions from TOP to LOWERING
+EARLY_REVERSAL_DELTA = 5.0          # Upward bounce in degrees while curling to catch premature reversal
+REP_COMPLETE_ELBOW_ANGLE = 130.0    # Arm extension angle required to evaluate rep completion
+
+# 4. Debounce Frame Thresholds (Higher = Slower/More Deliberate detection)
+DEBOUNCE_ELBOW_ELEVATION = 3        # Frames before flagging elbow forward swing/lift
+DEBOUNCE_SHRUG = 3                  # Frames before flagging shoulder shrugging
+DEBOUNCE_TORSO = 5                  # Frames before flagging torso lean-back / heave
+DEBOUNCE_KNEE = 3                   # Frames before flagging knee momentum bounce
+DEBOUNCE_DROP = 2                   # Frames before flagging fast/uncontrolled drop
+
+# 5. Model & Buffer Settings
+SEQUENCE_LENGTH = 30                # ST-GCN temporal frame buffer size
+
+# =====================================================================
+
+
 class DumbbellHammerCurlsTracker:
     def __init__(self):
-        self.state = "WAITING"   
+        self.state = "WAITING"
         self.good_reps = 0
         self.bad_reps = 0
-        self.half_reps = 0                 
+        self.half_reps = 0
 
-        self.peak_contraction_reached = False  # Full curl (elbow <= 75 deg)
-        self.half_curl_reached = False         # Half curl (elbow <= 105 deg)
-        self.min_elbow_angle = 180.0          
-        self.reversal_frames = 0               
+        self.rep_started = False
+        self.peak_contraction_reached = False
+        self.min_elbow_angle = 180.0
 
         # Upper-Body Strict Tripwires (SIDE / SAGITTAL VIEW)
-        self.elbow_stayed_down = True          # Catches lifting/swinging upper arm forward or up
-        self.shoulder_not_shrugged = True      # Catches heavy trap shrugging
-        self.torso_stable = True               # Catches excessive backward torso swing
-        self.ml_posture_maintained = True      # ST-GCN posture detection
+        self.elbow_stayed_down = True
+        self.shoulder_not_shrugged = True
+        self.torso_stable = True
+        self.ml_posture_maintained = True
 
-        # Advisory / Warning Flags (Does not invalidate a good rep)
-        self.fast_descent_warning = False  
-        self.knee_bounce_warning = False       # Advisory warning for using leg momentum
+        # Advisory / Warning Flags
+        self.fast_descent_warning = False
+        self.knee_bounce_warning = False
 
         self.baseline_ear_shoulder_dist = None
         self.baseline_shoulder_hip_dist = None
@@ -40,43 +80,24 @@ class DumbbellHammerCurlsTracker:
 
         self.prev_elbow_angle = None
         self.extended_frames = 0
+        self.unlock_frames = 0
         self.is_ready = False
         self.current_feedback = "Show body sideways, let arm hang"
         self.mp_pose = mp.solutions.pose
 
-        self.sequence_length = 30
+        self.sequence_length = SEQUENCE_LENGTH
         self.frame_buffer = deque(maxlen=self.sequence_length)
-        
+
         # Load TFLite model
-
-        
         self.interpreter = None
-
-        
         model_path = os.path.join("models", "tflite", "st_gcn_dumbbell_hammer_curls.tflite")
-
-        
         if os.path.exists(model_path):
-
-        
             try:
-
-        
                 self.interpreter = Interpreter(model_path=model_path)
-
-        
                 self.interpreter.allocate_tensors()
-
-        
                 self.input_details = self.interpreter.get_input_details()
-
-        
                 self.output_details = self.interpreter.get_output_details()
-
-        
             except Exception:
-
-        
                 self.interpreter = None
 
     def _extract_body_keypoints(self, landmarks):
@@ -85,9 +106,30 @@ class DumbbellHammerCurlsTracker:
         for idx in target_indices:
             lm = landmarks[idx]
             coords.append([lm.x, lm.y, lm.z])
-        while len(coords) < 25: 
+        while len(coords) < 25:
             coords.append([0.0, 0.0, 0.0])
         return np.array(coords, dtype=np.float32)
+
+    def _reset_rep_tracking(self):
+        self.rep_started = False
+        self.peak_contraction_reached = False
+        self.min_elbow_angle = 180.0
+        self.prev_elbow_angle = None
+
+        self.elbow_stayed_down = True
+        self.shoulder_not_shrugged = True
+        self.torso_stable = True
+        self.ml_posture_maintained = True
+        self.knee_bounce_warning = False
+        self.fast_descent_warning = False
+
+        self.elevation_frames = 0
+        self.shrug_frames = 0
+        self.torso_frames = 0
+        self.knee_frames = 0
+        self.drop_frames = 0
+
+        self.frame_buffer.clear()
 
     def process_frame(self, landmarks):
         l_ear = landmarks[self.mp_pose.PoseLandmark.LEFT_EAR.value]
@@ -105,19 +147,19 @@ class DumbbellHammerCurlsTracker:
         l_ankle = landmarks[self.mp_pose.PoseLandmark.LEFT_ANKLE.value]
         r_ankle = landmarks[self.mp_pose.PoseLandmark.RIGHT_ANKLE.value]
 
-        # Visibility across profile
+        # Profile visibility check
         l_vis = sum([l_shoulder.visibility, l_elbow.visibility, l_wrist.visibility, l_hip.visibility])
         r_vis = sum([r_shoulder.visibility, r_elbow.visibility, r_wrist.visibility, r_hip.visibility])
 
         total_reps = self.good_reps + self.bad_reps + self.half_reps
 
-        if max(l_vis, r_vis) < 1.8:
+        if max(l_vis, r_vis) < MIN_VISIBILITY_THRESHOLD:
             self.frame_buffer.clear()
             return {
                 "exercise": "Dumbbell Hammer Curls",
                 "state": "WAITING",
                 "good_reps": self.good_reps,
-                "bad_reps": self.bad_reps, 
+                "bad_reps": self.bad_reps,
                 "half_reps": self.half_reps,
                 "total_reps": total_reps,
                 "form_score": 0,
@@ -133,11 +175,11 @@ class DumbbellHammerCurlsTracker:
         active_knee = r_knee if r_vis > l_vis else l_knee
         active_ankle = r_ankle if r_vis > l_vis else l_ankle
 
-        # Joint angles
+        # Joint angle calculations
         elbow_angle = calculate_angle(active_shoulder, active_elbow, active_wrist)
         upper_arm_angle = calculate_angle(active_hip, active_shoulder, active_elbow)
         knee_angle = calculate_angle(active_hip, active_knee, active_ankle)
-        
+
         upper_arm_len = np.sqrt((active_shoulder.x - active_elbow.x)**2 + (active_shoulder.y - active_elbow.y)**2)
         if upper_arm_len == 0:
             upper_arm_len = 0.25
@@ -148,23 +190,28 @@ class DumbbellHammerCurlsTracker:
         # ---------------------------------------------------------
         # 1. SETUP GUARD
         # ---------------------------------------------------------
-        if elbow_angle > 130:
+        arm_extended = elbow_angle > SETUP_ELBOW_MIN_ANGLE
+
+        if arm_extended:
             self.extended_frames += 1
+            if self.extended_frames > SETUP_MIN_READY_FRAMES:
+                self.is_ready = True
+                if self.baseline_ear_shoulder_dist is None:
+                    self.baseline_ear_shoulder_dist = ear_shoulder_dist
+                if self.baseline_shoulder_hip_dist is None:
+                    self.baseline_shoulder_hip_dist = shoulder_hip_dist
+                if self.baseline_knee_angle is None:
+                    self.baseline_knee_angle = knee_angle
+                else:
+                    self.baseline_knee_angle = (
+                        BASELINE_EXPONENTIAL_ALPHA * self.baseline_knee_angle
+                        + BASELINE_NEW_SAMPLE_WEIGHT * knee_angle
+                    )
         else:
-            self.extended_frames = 0
+            self.extended_frames = max(0, self.extended_frames - 1)
 
-        if self.extended_frames > 6:
-            self.is_ready = True
-            if self.baseline_ear_shoulder_dist is None:
-                self.baseline_ear_shoulder_dist = ear_shoulder_dist
-            if self.baseline_shoulder_hip_dist is None:
-                self.baseline_shoulder_hip_dist = shoulder_hip_dist
-            if self.baseline_knee_angle is None:
-                self.baseline_knee_angle = knee_angle
-            else:
-                self.baseline_knee_angle = 0.9 * self.baseline_knee_angle + 0.1 * knee_angle
-
-        if not self.is_ready:
+        # Allow execution to proceed once ready or if currently mid-rep
+        if not self.is_ready and self.state not in ["EXTENDED", "CURLING", "TOP", "LOWERING", "LOCKED_FAULT"]:
             self.state = "WAITING"
             self.frame_buffer.clear()
             return {
@@ -179,164 +226,185 @@ class DumbbellHammerCurlsTracker:
                 "elbow_angle": round(elbow_angle, 1)
             }
 
-        # 2. ST-GCN Buffer
+        # ---------------------------------------------------------
+        # 2. ST-GCN TEMPORAL BUFFER
+        # ---------------------------------------------------------
         frame_coords = self._extract_body_keypoints(landmarks)
         self.frame_buffer.append(frame_coords)
 
         # ---------------------------------------------------------
         # 3. KINEMATIC TRIPWIRES
         # ---------------------------------------------------------
-        if self.state in ["CURLING", "TOP"]:
-            # A. Shoulder-to-Elbow Elevation & Forward Swing
+        if self.state in ["CURLING", "TOP", "LOWERING"]:
+            # A. Shoulder-to-Elbow Elevation & Forward Upper Arm Swing
             vertical_drop_ratio = (active_elbow.y - active_shoulder.y) / upper_arm_len
-            is_elevating = (upper_arm_angle > 15.0) or (vertical_drop_ratio < 0.30)
-            
+            is_elevating = (upper_arm_angle > MAX_UPPER_ARM_ANGLE) or (vertical_drop_ratio < MIN_VERTICAL_DROP_RATIO)
+
             if is_elevating:
                 self.elevation_frames += 1
-                if self.elevation_frames >= 2:
+                if self.elevation_frames >= DEBOUNCE_ELBOW_ELEVATION:
                     self.elbow_stayed_down = False
             else:
-                self.elevation_frames = 0
+                self.elevation_frames = max(0, self.elevation_frames - 1)
 
             # B. Shoulder Shrug Check
             if self.baseline_ear_shoulder_dist is not None:
-                ear_compressed = ear_shoulder_dist < (self.baseline_ear_shoulder_dist * 0.85)
+                ear_compressed = ear_shoulder_dist < (self.baseline_ear_shoulder_dist * SHRUG_EAR_DROP_RATIO)
                 if ear_compressed:
                     self.shrug_frames += 1
-                    if self.shrug_frames >= 3:
+                    if self.shrug_frames >= DEBOUNCE_SHRUG:
                         self.shoulder_not_shrugged = False
                 else:
                     self.shrug_frames = max(0, self.shrug_frames - 1)
 
             # C. Torso Lean-Back / Spine Heave
             torso_sway = abs(active_shoulder.x - active_hip.x) / upper_arm_len
-            if torso_sway > 0.75:
+            if torso_sway > MAX_TORSO_SWAY:
                 self.torso_frames += 1
-                if self.torso_frames >= 5:
+                if self.torso_frames >= DEBOUNCE_TORSO:
                     self.torso_stable = False
             else:
-                self.torso_frames = 0
+                self.torso_frames = max(0, self.torso_frames - 1)
 
-            # D. Knee Bounce / Leg-Drive Momentum (Sets advisory warning)
+            # D. Knee Bounce / Leg-Drive Momentum (Advisory)
             if self.baseline_knee_angle is not None:
                 knee_deflection = abs(knee_angle - self.baseline_knee_angle)
-                if knee_deflection > 14.0:
+                if knee_deflection > KNEE_BOUNCE_MAX_DEFLECTION:
                     self.knee_frames += 1
-                    if self.knee_frames >= 3:
+                    if self.knee_frames >= DEBOUNCE_KNEE:
                         self.knee_bounce_warning = True
                 else:
                     self.knee_frames = max(0, self.knee_frames - 1)
 
-            self.min_elbow_angle = min(self.min_elbow_angle, elbow_angle)
+        # ---------------------------------------------------------
+        # 4. STATE MACHINE (WITH LOCKED_FAULT FREEZE)
+        # ---------------------------------------------------------
+        if self.state == "LOCKED_FAULT":
+            if arm_extended:
+                self.unlock_frames += 1
+                if self.unlock_frames >= UNLOCK_RESET_FRAMES:
+                    self.state = "EXTENDED"
+                    self.unlock_frames = 0
+                    self._reset_rep_tracking()
+                    self.current_feedback = "Reset complete! Curl the weight up."
+            else:
+                self.unlock_frames = 0
 
-        # ---------------------------------------------------------
-        # 4. STATE MACHINE (Wrist to Chest Flow)
-        # ---------------------------------------------------------
+            return {
+                "exercise": "Dumbbell Hammer Curls",
+                "state": self.state,
+                "good_reps": self.good_reps,
+                "bad_reps": self.bad_reps,
+                "half_reps": self.half_reps,
+                "total_reps": total_reps,
+                "form_score": 0,
+                "feedback": self.current_feedback,
+                "elbow_angle": round(elbow_angle, 1)
+            }
+
+        # Setup to Initial Extended Transition
         if self.state == "WAITING" and self.is_ready:
             self.state = "EXTENDED"
             self.current_feedback = "Curl the weight up!"
 
-        elif self.state in ["EXTENDED", "LOWERING"] and elbow_angle < 125:
+        # Curl initiation
+        elif self.state in ["EXTENDED", "LOWERING"] and elbow_angle < CURL_START_ELBOW_ANGLE:
             self.state = "CURLING"
-            self.min_elbow_angle = elbow_angle
-            self.reversal_frames = 0
+            self.rep_started = True
+            self.min_elbow_angle = min(self.min_elbow_angle, elbow_angle)
             self.current_feedback = "Curl up to your chest..."
 
-        elif self.state == "CURLING" and elbow_angle <= 75:
+        # Full peak contraction reached (<= 75°)
+        elif self.state == "CURLING" and elbow_angle <= FULL_CURL_PEAK_ANGLE:
             self.state = "TOP"
             self.peak_contraction_reached = True
-            self.half_curl_reached = True
+            self.min_elbow_angle = min(self.min_elbow_angle, elbow_angle)
             self.current_feedback = "Good squeeze! Lower the weight."
 
-        elif self.state == "CURLING" and (80 <= self.min_elbow_angle <= 95) and (elbow_angle - self.min_elbow_angle) > 8:
-            self.reversal_frames += 1
-            if self.reversal_frames >= 3:
-                self.half_curl_reached = True
-                self.state = "LOWERING"
-                self.current_feedback = "Half rep: Lowering arm early..."
+        # Premature reversal detection while curling: arm stopped before 75° and reversed downward
+        elif self.state == "CURLING" and not self.peak_contraction_reached and (elbow_angle - self.min_elbow_angle) > EARLY_REVERSAL_DELTA:
+            self.state = "LOWERING"
+            self.current_feedback = "Incomplete curl! Lowering arm early..."
 
-        elif self.state == "TOP" and elbow_angle > 80:
+        # Normal descent transition from TOP
+        elif self.state == "TOP" and elbow_angle > LOWERING_START_ELBOW_ANGLE:
             self.state = "LOWERING"
             self.current_feedback = "Lower arm down..."
 
-        # Eccentric Free-Fall Monitor (Advisory only)
+        # Track minimum angle while in curling phase
+        if self.state in ["CURLING", "TOP"]:
+            self.min_elbow_angle = min(self.min_elbow_angle, elbow_angle)
+
+        # Eccentric Free-Fall Monitor (Advisory)
         if self.state in ["LOWERING", "CURLING"]:
             if self.prev_elbow_angle is not None:
                 drop_speed = elbow_angle - self.prev_elbow_angle
-                if drop_speed > 30.0:
+                if drop_speed > ECCENTRIC_DROP_SPEED_MAX:
                     self.drop_frames += 1
-                    if self.drop_frames >= 2:
+                    if self.drop_frames >= DEBOUNCE_DROP:
                         self.fast_descent_warning = True
+                else:
+                    self.drop_frames = max(0, self.drop_frames - 1)
             self.prev_elbow_angle = elbow_angle
         else:
             self.prev_elbow_angle = None
 
         # ---------------------------------------------------------
-        # 5. REP COMPLETION
+        # 5. REP COMPLETION & EVALUATION
         # ---------------------------------------------------------
-        if self.state in ["LOWERING", "TOP", "CURLING"] and (self.peak_contraction_reached or self.half_curl_reached) and elbow_angle >= 130:
+        if self.state in ["LOWERING", "TOP", "CURLING"] and self.rep_started and elbow_angle >= REP_COMPLETE_ELBOW_ANGLE:
             is_bad_rep = False
-            
-            # Form Cheats First (Invalidates the rep)
+
+            # Strict Form Tripwires (Form faults first)
             if not self.elbow_stayed_down:
-                self.current_feedback = "No rep: Keep elbows pinned down! Do not lift arm forward or up."
+                self.current_feedback = "Bad rep: Keep elbows pinned down! Return arm down to reset."
                 is_bad_rep = True
             elif not self.shoulder_not_shrugged:
-                self.current_feedback = "No rep: Relax your traps! Do not shrug shoulders up."
+                self.current_feedback = "Bad rep: Relax your traps! Return arm down to reset."
                 is_bad_rep = True
             elif not self.torso_stable:
-                self.current_feedback = "No rep: Do not heave or lean back with your spine."
+                self.current_feedback = "Bad rep: Do not heave or lean back! Return arm down to reset."
                 is_bad_rep = True
-            
-            # Rep Counting
+            elif not self.ml_posture_maintained:
+                self.current_feedback = "Bad rep: AI detected arm mechanics breakdown."
+                is_bad_rep = True
+
+            # Incomplete Rep & Half Rep Check (Flagged as Bad Rep)
+            elif not self.peak_contraction_reached:
+                if self.min_elbow_angle <= HALF_CURL_THRESHOLD_ANGLE:
+                    self.current_feedback = "Bad rep: Half rep! Curled to ~100°, squeeze to under 75°. Return arm down to reset."
+                else:
+                    self.current_feedback = "Bad rep: Movement was too shallow! Return arm down to reset."
+                is_bad_rep = True
+
+            # Rep Evaluation
             if is_bad_rep:
                 self.bad_reps += 1
-            elif self.peak_contraction_reached:
+                self.state = "LOCKED_FAULT"
+                self.unlock_frames = 0
+                self._reset_rep_tracking()
+            else:
                 self.good_reps += 1
                 if self.knee_bounce_warning:
                     self.current_feedback = "Good rep! Reminder: Keep knees steady, avoid leg drive."
                 elif self.fast_descent_warning:
-                    self.current_feedback = "Good rep! Reminder: Lower it slower for better muscle growth."
+                    self.current_feedback = "Good rep! Reminder: Lower slower for muscle control."
                 else:
                     self.current_feedback = "Great hammer curl! Clean rep."
-            elif self.half_curl_reached:
-                self.half_reps += 1
-                if self.knee_bounce_warning:
-                    self.current_feedback = "Half Rep! Reminder: Curl to chest and keep knees steady."
-                elif self.fast_descent_warning:
-                    self.current_feedback = "Half Rep! Reminder: Lower it slower & curl to chest."
-                else:
-                    self.current_feedback = "Counted as Half Rep: Curl all the way to chest!"
-            else:
-                self.bad_reps += 1
-                self.current_feedback = "No rep: Movement was too shallow."
-            
-            # Reset flags for next repetition
-            self.state = "EXTENDED"
-            self.peak_contraction_reached = False
-            self.half_curl_reached = False
-            self.min_elbow_angle = 180.0
-            self.reversal_frames = 0
-            
-            self.elevation_frames = 0
-            self.shrug_frames = 0
-            self.torso_frames = 0
-            self.knee_frames = 0
-            self.drop_frames = 0
-            
-            self.elbow_stayed_down = True
-            self.shoulder_not_shrugged = True
-            self.torso_stable = True
-            self.knee_bounce_warning = False
-            self.fast_descent_warning = False
-            self.prev_elbow_angle = None
-            
+                self.state = "EXTENDED"
+                self._reset_rep_tracking()
+
+            # Baseline updates on rep completion
             if self.baseline_ear_shoulder_dist is not None:
-                self.baseline_ear_shoulder_dist = 0.85 * self.baseline_ear_shoulder_dist + 0.15 * ear_shoulder_dist
+                self.baseline_ear_shoulder_dist = (
+                    BASELINE_EXPONENTIAL_ALPHA * self.baseline_ear_shoulder_dist
+                    + BASELINE_NEW_SAMPLE_WEIGHT * ear_shoulder_dist
+                )
             if self.baseline_shoulder_hip_dist is not None:
-                self.baseline_shoulder_hip_dist = 0.85 * self.baseline_shoulder_hip_dist + 0.15 * shoulder_hip_dist
-                
-            self.frame_buffer.clear()
+                self.baseline_shoulder_hip_dist = (
+                    BASELINE_EXPONENTIAL_ALPHA * self.baseline_shoulder_hip_dist
+                    + BASELINE_NEW_SAMPLE_WEIGHT * shoulder_hip_dist
+                )
 
         # Dynamic Scoring
         form_score = max(0, min(100, int(((150 - elbow_angle) / 80) * 100)))
@@ -350,8 +418,8 @@ class DumbbellHammerCurlsTracker:
             form_score -= 10
         if self.fast_descent_warning:
             form_score -= 8
-        if self.half_curl_reached and not self.peak_contraction_reached:
-            form_score -= 10
+        if not self.peak_contraction_reached and self.rep_started:
+            form_score -= 20
         form_score = max(0, form_score)
 
         return {
