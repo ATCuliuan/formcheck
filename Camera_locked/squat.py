@@ -45,7 +45,7 @@ class SquatTracker:
         
         # Load LiteRT model
         self.interpreter = None
-        model_path = os.path.join("models", "pt", "st_gcn_squat.pt")
+        model_path = os.path.join("models", "tflite", "st_gcn_squat.tflite")
 
         if os.path.exists(model_path):
             try:
@@ -53,12 +53,12 @@ class SquatTracker:
                 self.interpreter.allocate_tensors()
                 self.input_details = self.interpreter.get_input_details()
                 self.output_details = self.interpreter.get_output_details()
-                print(f"ST-GCN Pt Squat model loaded from {model_path}")
+                print(f"ST-GCN TFLite Squat model loaded from {model_path}")
             except Exception as e:
-                print(f"Error loading Pt Squat weights: {e}")
+                print(f"Error loading TFLite Squat weights: {e}")
                 self.interpreter = None
         else:
-            print(f"ST-GCN Pt model not found at {model_path}")
+            print(f"ST-GCN TFLite model not found at {model_path}")
 
     def _extract_body_keypoints(self, landmarks):
         target_indices = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]

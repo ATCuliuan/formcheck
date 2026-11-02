@@ -1,11 +1,9 @@
 import os
 from collections import deque
 import numpy as np
-import torch
-import torch.nn.functional as F
+from ai_edge_litert.interpreter import Interpreter
 import mediapipe as mp
 from core.kinematics import calculate_angle
-
 
 class PushupTracker:
     def __init__(self):
@@ -35,32 +33,18 @@ class PushupTracker:
 
         self.sequence_length = 30
         self.frame_buffer = deque(maxlen=self.sequence_length)
-        
-        # PyTorch Device and Model Initialization
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = None
-        model_path = os.path.join("models", "pt", "st_gcn_pushup.pt")
 
+        # Load TFLite model
+        self.interpreter = None
+        model_path = os.path.join("models", "tflite", "st_gcn_pushup.tflite")
         if os.path.exists(model_path):
             try:
-                # Load PyTorch checkpoint
-                loaded_obj = torch.load(model_path, map_location=self.device)
-                if isinstance(loaded_obj, torch.nn.Module):
-                    self.model = loaded_obj
-                elif isinstance(loaded_obj, dict) and "model" in loaded_obj and isinstance(loaded_obj["model"], torch.nn.Module):
-                    self.model = loaded_obj["model"]
-                else:
-                    self.model = loaded_obj
-
-                if hasattr(self.model, "eval"):
-                    self.model.eval()
-                    self.model.to(self.device)
-                print(f"✅ ST-GCN PyTorch Push-Up model loaded successfully from {model_path} on {self.device}")
-            except Exception as e:
-                print(f"⚠️ Failed to load PyTorch Push-Up model: {e}")
-                self.model = None
-        else:
-            print(f"⚠️ ST-GCN PyTorch model not found at {model_path}")
+                self.interpreter = Interpreter(model_path=model_path)
+                self.interpreter.allocate_tensors()
+                self.input_details = self.interpreter.get_input_details()
+                self.output_details = self.interpreter.get_output_details()
+            except Exception:
+                self.interpreter = None
 
     def _extract_body_keypoints(self, landmarks):
         target_indices = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
@@ -151,11 +135,11 @@ class PushupTracker:
                 "depth_reached": False
             }
 
-        # 3. ST-GCN Buffer & PyTorch Inference
+        # 3. ST-GCN Buffer & TFLite Inference
         frame_coords = self._extract_body_keypoints(landmarks)
         self.frame_buffer.append(frame_coords)
 
-        if self.model is not None and len(self.frame_buffer) == self.sequence_length:
+        if self.interpreter is not None and len(self.frame_buffer) == self.sequence_length:
             try:
                 # seq shape: (T=30, V=25, C=3)
                 seq = np.array(self.frame_buffer, dtype=np.float32)
@@ -166,7 +150,7 @@ class PushupTracker:
                 tensor_input = tensor_input.permute(2, 0, 1).unsqueeze(0)  # Shape: (1, 3, 30, 25)
 
                 with torch.no_grad():
-                    output = self.model(tensor_input)
+                    output = self.interpreter(tensor_input)
                     if isinstance(output, tuple):
                         output = output[0]
                     pred = torch.argmax(output, dim=1).item()
@@ -177,7 +161,7 @@ class PushupTracker:
                 try:
                     tensor_input = torch.from_numpy(seq).unsqueeze(0).to(self.device)
                     with torch.no_grad():
-                        output = self.model(tensor_input)
+                        output = self.interpreter(tensor_input)
                         if isinstance(output, tuple):
                             output = output[0]
                         pred = torch.argmax(output, dim=1).item()

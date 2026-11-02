@@ -1,7 +1,7 @@
 import os
 from collections import deque
 import numpy as np
-from core.torch_model import load_st_gcn_model
+from ai_edge_litert.interpreter import Interpreter
 import mediapipe as mp
 from core.kinematics import calculate_angle
 
@@ -35,9 +35,37 @@ class BandPullTracker:
         self.sequence_length = 30
         self.frame_buffer = deque(maxlen=self.sequence_length)
         
-        # Load PyTorch model
-        model_path = os.path.join("models", "pt", "st_gcn_band_pull_apart.pt")
-        self.model = load_st_gcn_model(model_path)
+        # Load TFLite model
+
+        
+        self.interpreter = None
+
+        
+        model_path = os.path.join("models", "tflite", "st_gcn_band_pull_apart.tflite")
+
+        
+        if os.path.exists(model_path):
+
+        
+            try:
+
+        
+                self.interpreter = Interpreter(model_path=model_path)
+
+        
+                self.interpreter.allocate_tensors()
+
+        
+                self.input_details = self.interpreter.get_input_details()
+
+        
+                self.output_details = self.interpreter.get_output_details()
+
+        
+            except Exception:
+
+        
+                self.interpreter = None
 
     def _extract_body_keypoints(self, landmarks):
         target_indices = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
@@ -118,13 +146,18 @@ class BandPullTracker:
         frame_coords = self._extract_body_keypoints(landmarks)
         self.frame_buffer.append(frame_coords)
 
-        if self.model and len(self.frame_buffer) == self.sequence_length:
+        if self.interpreter and len(self.frame_buffer) == self.sequence_length:
             try:
                 seq = np.array(self.frame_buffer, dtype=np.float32)
                 tensor_input = np.expand_dims(seq, axis=0)
                 
-                output_data = self.model.predict(tensor_input)
+                self.interpreter.set_tensor(self.input_details[0]['index'], tensor_input)
+
                 
+                self.interpreter.invoke()
+
+                
+                output_data = self.interpreter.get_tensor(self.output_details[0]['index'])
                 if np.argmax(output_data, axis=1)[0] == 0 and self.state != "WAITING":
                     self.ml_posture_maintained = False
             except Exception: 

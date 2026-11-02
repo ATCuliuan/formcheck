@@ -45,16 +45,35 @@ class StandingShoulderScaptionTracker:
         self.frame_buffer = deque(maxlen=self.sequence_length)
         
         # Load TFLite model
+
+        
         self.interpreter = None
+
+        
         model_path = os.path.join("models", "tflite", "st_gcn_standing_shoulder_scaption.tflite")
 
+        
         if os.path.exists(model_path):
+
+        
             try:
+
+        
                 self.interpreter = Interpreter(model_path=model_path)
+
+        
                 self.interpreter.allocate_tensors()
+
+        
                 self.input_details = self.interpreter.get_input_details()
+
+        
                 self.output_details = self.interpreter.get_output_details()
+
+        
             except Exception:
+
+        
                 self.interpreter = None
 
     def _extract_body_keypoints(self, landmarks):
@@ -199,9 +218,10 @@ class StandingShoulderScaptionTracker:
                 tensor_input = np.expand_dims(seq, axis=0)
 
                 self.interpreter.set_tensor(self.input_details[0]['index'], tensor_input)
-                self.interpreter.invoke()
-                output_data = self.interpreter.get_tensor(self.output_details[0]['index'])
 
+                self.interpreter.invoke()
+
+                output_data = self.interpreter.get_tensor(self.output_details[0]['index'])
                 predicted_class = np.argmax(output_data, axis=1)[0]
                 if predicted_class == 0 and self.state != "STANDING":
                     self.ml_posture_maintained = False

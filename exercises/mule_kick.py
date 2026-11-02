@@ -25,20 +25,17 @@ class MuleKickTracker:
         self.frame_buffer = deque(maxlen=self.sequence_length)
         
         self.interpreter = None
-        model_path = os.path.join("models", "tflite", "st_gcn_mule_kick.tflite")
-
         if os.path.exists(model_path):
             try:
                 self.interpreter = Interpreter(model_path=model_path)
                 self.interpreter.allocate_tensors()
                 self.input_details = self.interpreter.get_input_details()
                 self.output_details = self.interpreter.get_output_details()
-                print(f"✅ ST-GCN TFLite Mule Kick model loaded from {model_path}")
-            except Exception as e:
-                print(f"⚠️ Error loading TFLite Mule Kick weights: {e}")
+            except Exception:
                 self.interpreter = None
-        else:
-            print(f"⚠️ ST-GCN TFLite model not found at {model_path}")
+        
+        model_path = os.path.join("models", "tflite", "st_gcn_mule_kick.tflite")
+        
 
     def _extract_body_keypoints(self, landmarks):
         target_indices = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
@@ -113,10 +110,12 @@ class MuleKickTracker:
                 tensor_input = np.expand_dims(seq, axis=0)
                 
                 self.interpreter.set_tensor(self.input_details[0]['index'], tensor_input)
-                self.interpreter.invoke()
-                output_data = self.interpreter.get_tensor(self.output_details[0]['index'])
+
                 
-                # If the AI detects the lower back sagging
+                self.interpreter.invoke()
+
+                
+                output_data = self.interpreter.get_tensor(self.output_details[0]['index'])# If the AI detects the lower back sagging
                 if np.argmax(output_data, axis=1)[0] == 0 and self.state != "TABLETOP":
                     self.ml_posture_maintained = False
             except Exception:

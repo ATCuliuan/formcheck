@@ -38,22 +38,27 @@ class PullupTracker:
         self.sequence_length = 30
         self.frame_buffer = deque(maxlen=self.sequence_length)
 
-        # Load LiteRT Model
+        # Load TFLite model
+
         self.interpreter = None
+
         model_path = os.path.join("models", "tflite", "st_gcn_pullup.tflite")
 
         if os.path.exists(model_path):
+
             try:
+
                 self.interpreter = Interpreter(model_path=model_path)
+
                 self.interpreter.allocate_tensors()
+
                 self.input_details = self.interpreter.get_input_details()
+
                 self.output_details = self.interpreter.get_output_details()
-                print(f"✅ ST-GCN TFLite Pullup model loaded from {model_path}")
-            except Exception as e:
-                print(f"⚠️ Error loading TFLite Pullup weights: {e}")
+
+            except Exception:
+
                 self.interpreter = None
-        else:
-            print(f"⚠️ ST-GCN TFLite model not found at {model_path}")
 
     def _extract_body_keypoints(self, landmarks):
         target_indices = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
@@ -162,7 +167,9 @@ class PullupTracker:
             try:
                 seq = np.expand_dims(np.array(self.frame_buffer, dtype=np.float32), axis=0)
                 self.interpreter.set_tensor(self.input_details[0]['index'], seq)
+
                 self.interpreter.invoke()
+
                 out = self.interpreter.get_tensor(self.output_details[0]['index'])
                 if np.argmax(out, axis=1)[0] == 0 and self.state != "HANGING":
                     self.ml_posture_maintained = False

@@ -37,21 +37,36 @@ class DumbbellFloorFlyeTracker:
         self.frame_buffer = deque(maxlen=self.sequence_length)
         
         # Load TFLite model
+
+        
         self.interpreter = None
+
+        
         model_path = os.path.join("models", "tflite", "st_gcn_dumbbell_floor_flye.tflite")
 
+        
         if os.path.exists(model_path):
+
+        
             try:
+
+        
                 self.interpreter = Interpreter(model_path=model_path)
+
+        
                 self.interpreter.allocate_tensors()
+
+        
                 self.input_details = self.interpreter.get_input_details()
+
+        
                 self.output_details = self.interpreter.get_output_details()
-                print(f"✅ ST-GCN TFLite Dumbbell Floor Flye model loaded from {model_path}")
-            except Exception as e:
-                print(f"⚠️ Error loading TFLite Dumbbell Floor Flye weights: {e}")
+
+        
+            except Exception:
+
+        
                 self.interpreter = None
-        else:
-            print(f"⚠️ ST-GCN TFLite model not found at {model_path}")
 
     def _extract_body_keypoints(self, landmarks):
         target_indices = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
@@ -164,9 +179,12 @@ class DumbbellFloorFlyeTracker:
                 tensor_input = np.expand_dims(seq, axis=0)
                 
                 self.interpreter.set_tensor(self.input_details[0]['index'], tensor_input)
-                self.interpreter.invoke()
-                output_data = self.interpreter.get_tensor(self.output_details[0]['index'])
+
                 
+                self.interpreter.invoke()
+
+                
+                output_data = self.interpreter.get_tensor(self.output_details[0]['index'])
                 predicted_class = np.argmax(output_data, axis=1)[0]
                 if predicted_class == 0 and self.state != "TOP":
                     self.ml_posture_maintained = False

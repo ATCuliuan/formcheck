@@ -38,20 +38,17 @@ class BurpeesTracker:
         self.frame_buffer = deque(maxlen=self.sequence_length)
         
         self.interpreter = None
-        model_path = os.path.join("models", "tflite", "st_gcn_burpees.tflite")
-
         if os.path.exists(model_path):
             try:
                 self.interpreter = Interpreter(model_path=model_path)
                 self.interpreter.allocate_tensors()
                 self.input_details = self.interpreter.get_input_details()
                 self.output_details = self.interpreter.get_output_details()
-                print(f"✅ ST-GCN TFLite Burpees model loaded from {model_path}")
-            except Exception as e:
-                print(f"⚠️ Error loading TFLite Burpees weights: {e}")
+            except Exception:
                 self.interpreter = None
-        else:
-            print(f"⚠️ ST-GCN TFLite model not found at {model_path}")
+        
+        model_path = os.path.join("models", "tflite", "st_gcn_burpees.tflite")
+        
 
     def _extract_body_keypoints(self, landmarks):
         target_indices = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
@@ -145,9 +142,12 @@ class BurpeesTracker:
                 tensor_input = np.expand_dims(seq, axis=0)
                 
                 self.interpreter.set_tensor(self.input_details[0]['index'], tensor_input)
-                self.interpreter.invoke()
-                output_data = self.interpreter.get_tensor(self.output_details[0]['index'])
+
                 
+                self.interpreter.invoke()
+
+                
+                output_data = self.interpreter.get_tensor(self.output_details[0]['index'])
                 if np.argmax(output_data, axis=1)[0] == 0 and self.state != "STANDING":
                     self.ml_posture_maintained = False
             except Exception:

@@ -10,10 +10,12 @@ class LateralRaiseTracker:
         self.state = "WAITING"   
         self.good_reps = 0
         self.bad_reps = 0
-        self.half_reps = 0                 # Kept for camera test harness compatibility
+        self.half_reps = 0                 # Counts partial ROM raises
         
         self.target_height_reached = False # Full ROM: parallel reach
+        self.half_raise_reached = False    # Half ROM
         self.max_abduction = 0.0           # Tracks peak raise height achieved
+        self.reversal_frames = 0           # Debounce counter for jitter
         
         # Instructor Tripwires (FRONT VIEW - Calibrated to Realistic Lifter Limits)
         self.arms_straight_enough = True   # Soft bend allowed (~115°+), only catches excessive curling
@@ -237,6 +239,7 @@ class LateralRaiseTracker:
             else:
                 self.balance_frames = max(0, self.balance_frames - 1)
 
+            # F. Over-Raise
             # F. Over-Raise (> 100° abduction or hands clearly over shoulders)
             wrist_over_shoulder = (l_wrist.y < l_shoulder.y - 0.08) or (r_wrist.y < r_shoulder.y - 0.08)
             if max_abduction > 100.0 or wrist_over_shoulder:
@@ -264,7 +267,7 @@ class LateralRaiseTracker:
             self.max_abduction = max(self.max_abduction, min_abduction)
 
         # ---------------------------------------------------------
-        # 4. STATE MACHINE (NO HALF REPS - FULL ROM ONLY)
+        # 4. STATE MACHINE
         # ---------------------------------------------------------
         if self.state == "WAITING" and self.is_ready:
             self.state = "RESTING"
@@ -274,18 +277,23 @@ class LateralRaiseTracker:
         elif self.state in ["RESTING", "DESCENDING"] and min_abduction > 30:
             self.state = "ASCENDING"
             self.max_abduction = min_abduction
+            self.reversal_frames = 0
             self.current_feedback = "Raise dumbbells to shoulder height..."
 
         # Full ROM: 60° to 95° enters TOP
         elif self.state == "ASCENDING" and min_abduction >= 60:
             self.target_height_reached = True
+            self.half_raise_reached = True
             self.state = "TOP"
             self.current_feedback = "Good height! Lower under control."
 
-        # Early downward reversal before reaching shoulder level (incomplete rep)
-        elif self.state == "ASCENDING" and (self.max_abduction - min_abduction) > 8:
-            self.state = "DESCENDING"
-            self.current_feedback = "Perform a full rep! Raise arms all the way to shoulder height."
+        # Half Rep Reversal: Reached between 30° and 60°, then reversed downward by > 8°
+        elif self.state == "ASCENDING" and (30 <= self.max_abduction < 60) and (self.max_abduction - min_abduction) > 8:
+            self.reversal_frames += 1
+            if self.reversal_frames >= 3:
+                self.half_raise_reached = True
+                self.state = "DESCENDING"
+                self.current_feedback = "Half rep: Lowering arms early..."
 
         # Lowering out of TOP once arms drop below 55°
         elif self.state == "TOP" and max_abduction < 55:
@@ -305,7 +313,7 @@ class LateralRaiseTracker:
         # ---------------------------------------------------------
         # 5. REP COMPLETION: Return down (max abduction <= 35°)
         # ---------------------------------------------------------
-        if self.state in ["DESCENDING", "TOP", "ASCENDING"] and max_abduction <= 35:
+        if self.state in ["DESCENDING", "TOP", "ASCENDING"] and (self.target_height_reached or self.half_raise_reached) and max_abduction <= 35:
             is_bad_rep = False
 
             # Form Cheats First (Invalidates the rep)
@@ -333,24 +341,32 @@ class LateralRaiseTracker:
             elif not self.ml_posture_maintained:
                 self.current_feedback = "No rep: AI flagged poor posture/mechanics."
                 is_bad_rep = True
-            elif not self.target_height_reached:
-                self.current_feedback = "No rep: Perform a full rep! Lift arms all the way to shoulder height."
-                is_bad_rep = True
                 
             # Rep Counting
             if is_bad_rep:
                 self.bad_reps += 1
-            else:
+            elif self.target_height_reached:
                 self.good_reps += 1
                 if self.knee_bounce_warning:
                     self.current_feedback = "Good rep! Reminder: Strict raise only, avoid leg bounce."
                 else:
                     self.current_feedback = "Clean lateral raise! Good rep."
+            elif self.half_raise_reached:
+                self.half_reps += 1
+                if self.knee_bounce_warning:
+                    self.current_feedback = "Half Rep! Reminder: Lift to shoulder height and avoid leg bounce."
+                else:
+                    self.current_feedback = "Counted as Half Rep: Lift arms all the way to shoulder height!"
+            else:
+                self.bad_reps += 1
+                self.current_feedback = "No rep: Raise was too shallow to count."
                 
             # Reset flags for next rep
             self.state = "RESTING"
             self.target_height_reached = False
+            self.half_raise_reached = False
             self.max_abduction = 0.0
+            self.reversal_frames = 0
             
             self.knee_frames = 0
             self.over_raise_frames = 0
@@ -384,7 +400,7 @@ class LateralRaiseTracker:
         if not self.not_over_raised: form_score -= 20
         if self.knee_bounce_warning: form_score -= 10
         if not self.ml_posture_maintained: form_score -= 25
-        if not self.target_height_reached: form_score -= 20
+        if self.half_raise_reached and not self.target_height_reached: form_score -= 10
         form_score = max(0, form_score)
 
         return {

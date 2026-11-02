@@ -40,7 +40,6 @@ class StandingOverheadExtensionTracker:
         self.frame_buffer = deque(maxlen=self.sequence_length)
         
         self.interpreter = None
-        model_path = os.path.join("models", "tflite", "st_gcn_standing_overhead_extension.tflite")
         if os.path.exists(model_path):
             try:
                 self.interpreter = Interpreter(model_path=model_path)
@@ -49,6 +48,9 @@ class StandingOverheadExtensionTracker:
                 self.output_details = self.interpreter.get_output_details()
             except Exception:
                 self.interpreter = None
+        
+        model_path = os.path.join("models", "tflite", "st_gcn_standing_overhead_extension.tflite")
+        
 
     def _extract_body_keypoints(self, landmarks):
         target_indices = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]

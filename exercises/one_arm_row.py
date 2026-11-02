@@ -45,17 +45,36 @@ class OneArmRowTracker:
         self.sequence_length = 30
         self.frame_buffer = deque(maxlen=self.sequence_length)
         
-        # Load LiteRT Model
+        # Load TFLite model
+
+        
         self.interpreter = None
+
+        
         model_path = os.path.join("models", "tflite", "st_gcn_one_arm_row.tflite")
 
+        
         if os.path.exists(model_path):
+
+        
             try:
+
+        
                 self.interpreter = Interpreter(model_path=model_path)
+
+        
                 self.interpreter.allocate_tensors()
+
+        
                 self.input_details = self.interpreter.get_input_details()
+
+        
                 self.output_details = self.interpreter.get_output_details()
+
+        
             except Exception:
+
+        
                 self.interpreter = None
 
     def _extract_body_keypoints(self, landmarks):
@@ -167,9 +186,10 @@ class OneArmRowTracker:
             try:
                 seq = np.expand_dims(np.array(self.frame_buffer, dtype=np.float32), axis=0)
                 self.interpreter.set_tensor(self.input_details[0]['index'], seq)
-                self.interpreter.invoke()
-                output_data = self.interpreter.get_tensor(self.output_details[0]['index'])[0]
 
+                self.interpreter.invoke()
+
+                output_data = self.interpreter.get_tensor(self.output_details[0]['index'])[0]
                 exp_vals = np.exp(output_data - np.max(output_data))
                 probs = exp_vals / np.sum(exp_vals)
 
