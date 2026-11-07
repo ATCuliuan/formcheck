@@ -22,14 +22,14 @@ MIN_VISIBILITY_THRESHOLD = 2.5       # Minimum keypoint visibility
 MIN_KNEE_OFF_FLOOR_ANGLE = 145.0     # Knees bending past this indicates kneeling
 MIN_SUPPORT_ARM_ANGLE = 140.0        # Planted arm bending or dropping to forearm
 MAX_HIP_TWIST_DELTA = 0.08           # Pelvis rotation height difference
-MIN_CORE_SAG_BODY_ANGLE = 138.0      # Hips dropping below shoulders
+MIN_CORE_SAG_BODY_ANGLE = 138.0      # Hips dropping below shoulders (forgiving threshold)
 MIN_CORE_PIKE_BODY_ANGLE = 142.0     # Butt peaking upward
 ECCENTRIC_DROP_SPEED_MAX = 24.0      # Slamming dumbbell onto floor cutoff
 EARLY_REVERSAL_DELTA = 8.0           # Early downward drop before hitting ribs
 
 # 3. Pull Depth & Range of Motion
-FULL_ROW_MAX_ELBOW_ANGLE = 90.0      # Dumbbell pulled to ribs
-HALF_ROW_MAX_ELBOW_ANGLE = 115.0     # Pulling past 115° but short of 90° awards half rep
+FULL_ROW_MAX_ELBOW_ANGLE = 90.0      # Dumbbell pulled fully to ribs (elbow <= 90°)
+HALF_ROW_MAX_ELBOW_ANGLE = 115.0     # Shallow pull cutoff flagged strictly as bad rep
 PULLING_START_ELBOW_ANGLE = 140.0    # Initiating pull
 LOWERING_START_ELBOW_ANGLE = 100.0   # Lowering weight from rib cage
 REP_COMPLETE_ELBOW_ANGLE = 150.0     # Both arms returned to high plank lockout
@@ -39,7 +39,7 @@ DEBOUNCE_PROFILE = 4
 DEBOUNCE_KNEE_FLOOR = 3              # Frames before flagging knees on floor
 DEBOUNCE_ELBOW_PLANK = 3             # Frames before flagging dropping to elbows
 DEBOUNCE_TWIST = 3
-DEBOUNCE_SAG = 5
+DEBOUNCE_SAG = 5                     # Debounce filter to prevent false positive sag flags
 DEBOUNCE_PIKE = 3
 DEBOUNCE_SUPPORT = 3
 DEBOUNCE_DROP = 2
@@ -61,11 +61,11 @@ class RenegadeRowTracker:
         self.state = "WAITING"
         self.good_reps = 0
         self.bad_reps = 0
-        self.half_reps = 0
+        self.half_reps = 0                 # Kept at 0 for API compatibility
 
         self.rep_started = False
         self.depth_reached = False
-        self.half_depth_reached = False
+        self.was_half_rep = False
         self.min_row_elbow = 180.0
 
         # Posture Tripwires (SIDE / SAGITTAL VIEW)
@@ -127,7 +127,7 @@ class RenegadeRowTracker:
     def _reset_rep_tracking(self):
         self.rep_started = False
         self.depth_reached = False
-        self.half_depth_reached = False
+        self.was_half_rep = False
         self.min_row_elbow = 180.0
         self.reversal_frames = 0
         self.prev_row_elbow = None
@@ -170,7 +170,7 @@ class RenegadeRowTracker:
 
         l_vis = sum([l_shoulder.visibility, l_elbow.visibility, l_hip.visibility, l_knee.visibility, l_ankle.visibility])
         r_vis = sum([r_shoulder.visibility, r_elbow.visibility, r_hip.visibility, r_knee.visibility, r_ankle.visibility])
-        total_reps = self.good_reps + self.bad_reps + self.half_reps
+        total_reps = self.good_reps + self.bad_reps
 
         if self.post_rep_timer > 0:
             self.post_rep_timer -= 1
@@ -186,7 +186,6 @@ class RenegadeRowTracker:
                 "row_elbow_angle": 0.0, "body_angle": 0.0, "depth_reached": False
             }
 
-        # Bilateral arm tracking
         l_elbow_angle = calculate_angle(l_shoulder, l_elbow, l_wrist)
         r_elbow_angle = calculate_angle(r_shoulder, r_elbow, r_wrist)
 
@@ -197,17 +196,14 @@ class RenegadeRowTracker:
             rowing_elbow_angle = r_elbow_angle
             support_elbow_angle = l_elbow_angle
 
-        # Active side keypoints
         active_shoulder = r_shoulder if r_vis > l_vis else l_shoulder
         active_hip = r_hip if r_vis > l_vis else l_hip
         active_knee = r_knee if r_vis > l_vis else l_knee
         active_ankle = r_ankle if r_vis > l_vis else l_ankle
 
-        # Angles: Body line & Leg lockout
         body_angle = calculate_angle(active_shoulder, active_hip, active_ankle)
         knee_extension_angle = calculate_angle(active_hip, active_knee, active_ankle)
 
-        # Profile verification
         torso_len = np.hypot(active_shoulder.x - active_hip.x, active_shoulder.y - active_hip.y) or 0.40
         shoulder_span_x = abs(l_shoulder.x - r_shoulder.x)
         is_side = (shoulder_span_x / torso_len) < SETUP_MAX_SHOULDER_SPAN_RATIO
@@ -216,14 +212,12 @@ class RenegadeRowTracker:
         dy_body = abs(active_shoulder.y - active_ankle.y)
         is_horizontal = dx_body > (dy_body * 1.1)
 
-        # Knees on ground detection
+        # Ground contact guards
         is_kneeling = (knee_extension_angle < MIN_KNEE_OFF_FLOOR_ANGLE) or (active_knee.y >= (active_ankle.y - 0.02))
-
-        # Elbow plank detection: planted support arm is bent down near forearm level (< 135°)
         is_on_elbows = support_elbow_angle < 135.0
 
         # ---------------------------------------------------------
-        # 1. SETUP GUARD (Strict High Plank: On Hands & Toes Only)
+        # 1. SETUP GUARD
         # ---------------------------------------------------------
         is_plank = (
             (rowing_elbow_angle >= SETUP_PLANK_ELBOW_MIN_ANGLE)
@@ -303,7 +297,6 @@ class RenegadeRowTracker:
             else:
                 self.profile_frames = max(0, self.profile_frames - 1)
 
-            # Knees on floor cheat
             if is_kneeling:
                 self.knee_floor_frames += 1
                 if self.knee_floor_frames >= DEBOUNCE_KNEE_FLOOR:
@@ -311,7 +304,6 @@ class RenegadeRowTracker:
             else:
                 self.knee_floor_frames = max(0, self.knee_floor_frames - 1)
 
-            # Dropping to elbow plank cheat
             if is_on_elbows:
                 self.elbow_plank_frames += 1
                 if self.elbow_plank_frames >= DEBOUNCE_ELBOW_PLANK:
@@ -319,7 +311,6 @@ class RenegadeRowTracker:
             else:
                 self.elbow_plank_frames = max(0, self.elbow_plank_frames - 1)
 
-            # Pelvis rotation cheat
             hip_level_offset = abs(l_hip.y - r_hip.y)
             if hip_level_offset > MAX_HIP_TWIST_DELTA:
                 self.twist_frames += 1
@@ -328,15 +319,14 @@ class RenegadeRowTracker:
             else:
                 self.twist_frames = max(0, self.twist_frames - 1)
 
-            # Core sagging
-            if active_hip.y > active_shoulder.y and body_angle < MIN_CORE_SAG_BODY_ANGLE:
+            # Core sag check with margin and loosened 138° threshold
+            if (active_hip.y > active_shoulder.y + 0.04) and (body_angle < MIN_CORE_SAG_BODY_ANGLE):
                 self.sag_frames += 1
                 if self.sag_frames >= DEBOUNCE_SAG:
                     self.core_maintained = False
             else:
                 self.sag_frames = max(0, self.sag_frames - 1)
 
-            # Core piking
             if active_hip.y < active_shoulder.y and body_angle < MIN_CORE_PIKE_BODY_ANGLE:
                 self.pike_frames += 1
                 if self.pike_frames >= DEBOUNCE_PIKE:
@@ -344,7 +334,6 @@ class RenegadeRowTracker:
             else:
                 self.pike_frames = max(0, self.pike_frames - 1)
 
-            # Support arm buckling (must stay tall on hand)
             if support_elbow_angle < MIN_SUPPORT_ARM_ANGLE:
                 self.support_frames += 1
                 if self.support_frames >= DEBOUNCE_SUPPORT:
@@ -397,12 +386,11 @@ class RenegadeRowTracker:
             if self.post_rep_timer == 0:
                 self.current_feedback = "Top squeeze! Lower weight with control."
 
-        # Early downward reversal (Half rep branch)
+        # Early downward reversal (Converted into bad rep trigger)
         elif self.state == "PULLING" and not self.depth_reached and (rowing_elbow_angle - self.min_row_elbow) > EARLY_REVERSAL_DELTA:
             self.reversal_frames += 1
             if self.reversal_frames >= DEBOUNCE_HALF_REP:
-                if self.min_row_elbow <= HALF_ROW_MAX_ELBOW_ANGLE:
-                    self.half_depth_reached = True
+                self.was_half_rep = True
                 self.state = "LOWERING"
                 self.current_feedback = "Incomplete row! Lowering weight early..."
 
@@ -433,7 +421,6 @@ class RenegadeRowTracker:
         # ---------------------------------------------------------
         if self.rep_started and self.state in ["LOWERING", "TOP", "PULLING"] and rowing_elbow_angle >= REP_COMPLETE_ELBOW_ANGLE and support_elbow_angle >= REP_COMPLETE_ELBOW_ANGLE:
             is_bad_rep = False
-            is_half_rep = False
 
             if not self.is_side_view:
                 self.current_feedback = "Bad rep: Stand sideways in plank to camera!"
@@ -462,22 +449,17 @@ class RenegadeRowTracker:
             elif not self.ml_posture_maintained:
                 self.current_feedback = "Bad rep: AI flagged torso rotation/breakdown."
                 is_bad_rep = True
-            elif not self.depth_reached:
-                if self.min_row_elbow <= HALF_ROW_MAX_ELBOW_ANGLE or self.half_depth_reached:
-                    self.current_feedback = "Half rep: Incomplete row! Pull dumbbell fully to ribs."
-                    is_half_rep = True
+            elif self.was_half_rep or not self.depth_reached:
+                if self.min_row_elbow <= HALF_ROW_MAX_ELBOW_ANGLE:
+                    self.current_feedback = "Bad rep: Half rep! Pull dumbbell all the way to ribs."
                 else:
                     self.current_feedback = "Bad rep: Row was too shallow! Pull dumbbell all the way up."
-                    is_bad_rep = True
+                is_bad_rep = True
 
             if is_bad_rep:
                 self.bad_reps += 1
                 self.state = "LOCKED_FAULT"
                 self.unlock_frames = 0
-                self._reset_rep_tracking()
-            elif is_half_rep:
-                self.half_reps += 1
-                self.state = "PLANKING"
                 self._reset_rep_tracking()
             else:
                 self.good_reps += 1
@@ -496,7 +478,7 @@ class RenegadeRowTracker:
         if not self.no_pike: form_score -= 20
         if not self.support_arm_locked: form_score -= 25
         if not self.controlled_descent: form_score -= 20
-        if not self.depth_reached and self.state == "LOWERING": form_score -= 25
+        if (self.was_half_rep or not self.depth_reached) and self.state == "LOWERING": form_score -= 25
         form_score = max(0, form_score)
 
         return {
