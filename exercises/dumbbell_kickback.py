@@ -6,47 +6,51 @@ import mediapipe as mp
 from core.kinematics import calculate_angle
 
 # =====================================================================
-# TRACKER TUNING CONFIGURATION (DUMBBELL KICKBACK - SAGITTAL VIEW)
+# TRACKER TUNING CONFIGURATION (DUMBBELL KICKBACK - CLEANED & STREAMLINED)
 # =====================================================================
 
 # 1. Setup & Starting Guard
-SETUP_TORSO_MAX_ANGLE = 150.0        # Torso must be hinged below 150° (forgiving hinge)
-SETUP_ELBOW_START_MAX_ANGLE = 110.0  # Elbow flexed around 90° (allowing up to 110°)
-SETUP_UPPER_ARM_PINNED_ANGLE = 45.0  # Upper arm pinned along ribs (relaxed from 32° to prevent lockup)
-SETUP_MAX_SHOULDER_SPAN_RATIO = 0.45 # Side profile ratio limit
-MAX_FOREARM_VERTICAL_DRIFT = 0.35    # Max horizontal drift between wrist and elbow / forearm length
-SETUP_MIN_READY_FRAMES = 5           # Reduced to 5 frames to start easily
-UNLOCK_RESET_FRAMES = 15             # Reset frames for LOCKED_FAULT
-MIN_VISIBILITY_THRESHOLD = 2.0       # Minimum keypoint visibility
+SETUP_MAX_SHOULDER_SPAN_RATIO = 0.48 
+SETUP_TORSO_MAX_ANGLE = 60.0         # torso angle is measured from HORIZONTAL (0-90), so 165 never failed
+MAX_SHOULDER_ELBOW_X_DRIFT = 0.15    # (no longer used: replaced by the upper-arm-pinned check)
+MIN_FOREARM_HORIZONTAL_ANGLE = 55.0  
+MAX_FOREARM_HORIZONTAL_ANGLE = 125.0
+SETUP_ELBOW_START_MAX_ANGLE = 120.0  
+SETUP_UPPER_ARM_PINNED_ANGLE = 55.0  
+SETUP_MIN_READY_FRAMES = 4           
+UNLOCK_RESET_FRAMES = 10             
+SETUP_LOST_RESET_FRAMES = 12         # frames out of hinge (between reps) before setup is required again
+MIN_VISIBILITY_THRESHOLD = 1.8       
 
 # 2. Kinematic & Form Thresholds
-MAX_TORSO_UPRIGHT_ANGLE = 150.0      # Standing up past this flags torso cheat
-MAX_UPPER_ARM_DROP_ANGLE = 42.0      # Upper arm dropping forward past this flags dropped elbow
-MAX_ELBOW_HIKE_ANGLE = 45.0          # Upper arm hiking above rib cage flags overextension
-MAX_TORSO_HEAVE_DELTA = 16.0         # Chest swinging / torso heave degrees from baseline
-ECCENTRIC_DROP_SPEED_MAX = 24.0      # Forearm free-fall angular speed cutoff (deg/frame)
+MAX_TORSO_UPRIGHT_ANGLE = 70.0       # from horizontal; standing up mid-rep (e.g. a standing curl) trips this
+LOCKOUT_MIN_FOREARM_ALIGNMENT = 0.75 # cos(angle) between forearm and torso axis required at lockout
+MAX_UPPER_ARM_DROP_ANGLE = 55.0      
+MAX_ELBOW_HIKE_ANGLE = 55.0          
+MAX_TORSO_HEAVE_DELTA = 22.0         
+ECCENTRIC_DROP_SPEED_MAX = 30.0      
 
 # 3. Extension Depth & Range of Motion
-FULL_LOCKOUT_MIN_ANGLE = 155.0       # Minimum elbow angle required for full triceps lockout
-HALF_EXT_THRESHOLD_ANGLE = 130.0     # Extending past 130° but short of 155° awards half rep
-EXTENDING_START_ELBOW_ANGLE = 115.0  # Backward extension threshold triggering EXTENDING
-RETURNING_START_ELBOW_ANGLE = 145.0  # Dropping below this from LOCKED transitions to RETURNING
-EARLY_REVERSAL_DELTA = 8.0           # Early forward descent delta flagging premature reversal
-REP_COMPLETE_ELBOW_ANGLE = 100.0     # Return angle to flexed position evaluating rep completion
+FULL_LOCKOUT_MIN_ANGLE = 148.0       
+HALF_EXT_THRESHOLD_ANGLE = 120.0     
+EXTENDING_START_ELBOW_ANGLE = 110.0  
+RETURNING_START_ELBOW_ANGLE = 138.0  
+EARLY_REVERSAL_DELTA = 10.0          
+REP_COMPLETE_ELBOW_ANGLE = 110.0     
 
 # 4. Debounce Frame Thresholds
-DEBOUNCE_PROFILE = 4
-DEBOUNCE_TORSO = 4
-DEBOUNCE_ELBOW_DROP = 4
-DEBOUNCE_OVEREXTENSION = 4
-DEBOUNCE_CURL = 2
-DEBOUNCE_HEAVE = 3
-DEBOUNCE_DROP = 2
-DEBOUNCE_HALF_REP = 2
+DEBOUNCE_PROFILE = 6
+DEBOUNCE_TORSO = 6
+DEBOUNCE_ELBOW_DROP = 6
+DEBOUNCE_OVEREXTENSION = 6
+DEBOUNCE_CURL = 3
+DEBOUNCE_HEAVE = 5
+DEBOUNCE_DROP = 3
+DEBOUNCE_HALF_REP = 4
 
 # 5. ST-GCN Machine Learning Model Sensitivity
-ML_FAULT_CONFIDENCE_THRESHOLD = 0.75
-DEBOUNCE_ML_FAULT = 5
+ML_FAULT_CONFIDENCE_THRESHOLD = 0.82
+DEBOUNCE_ML_FAULT = 6
 
 # 6. Model & Buffer Settings
 SEQUENCE_LENGTH = 30
@@ -90,11 +94,12 @@ class DumbbellKickbackTracker:
 
         self.standing_frames = 0
         self.unlock_frames = 0
+        self.setup_lost_frames = 0
         self.prev_elbow_angle = None
         self.post_rep_timer = 0
         self.is_ready = False
 
-        self.current_feedback = "Hinge forward, pin elbow to ribs, let hand hang straight down"
+        self.current_feedback = "Hinge forward, align shoulder over elbow, let forearm hang down"
         self.mp_pose = mp.solutions.pose
 
         self.sequence_length = SEQUENCE_LENGTH
@@ -158,8 +163,6 @@ class DumbbellKickbackTracker:
         r_wrist = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST.value]
         l_hip = landmarks[self.mp_pose.PoseLandmark.LEFT_HIP.value]
         r_hip = landmarks[self.mp_pose.PoseLandmark.RIGHT_HIP.value]
-        l_knee = landmarks[self.mp_pose.PoseLandmark.LEFT_KNEE.value]
-        r_knee = landmarks[self.mp_pose.PoseLandmark.RIGHT_KNEE.value]
 
         l_vis = sum([l_shoulder.visibility, l_elbow.visibility, l_wrist.visibility, l_hip.visibility])
         r_vis = sum([r_shoulder.visibility, r_elbow.visibility, r_wrist.visibility, r_hip.visibility])
@@ -184,43 +187,46 @@ class DumbbellKickbackTracker:
                 "depth_reached": False
             }
 
-        # Select dominant profile facing camera
         active_shoulder = r_shoulder if r_vis > l_vis else l_shoulder
         active_elbow = r_elbow if r_vis > l_vis else l_elbow
         active_wrist = r_wrist if r_vis > l_vis else l_wrist
         active_hip = r_hip if r_vis > l_vis else l_hip
-        active_knee = r_knee if r_vis > l_vis else l_knee
 
-        # Sagittal kinematics
-        torso_angle = calculate_angle(active_shoulder, active_hip, active_knee)
+        # Clean vector-based torso angle relative to horizontal
+        torso_dx = active_shoulder.x - active_hip.x
+        torso_dy = active_shoulder.y - active_hip.y
+        torso_angle = np.degrees(np.arctan2(abs(torso_dy), abs(torso_dx)))
+
         upper_arm_angle = calculate_angle(active_hip, active_shoulder, active_elbow)
         elbow_angle = calculate_angle(active_shoulder, active_elbow, active_wrist)
 
-        # Profile angle verification
         shoulder_span_x = abs(l_shoulder.x - r_shoulder.x)
         torso_height = abs(active_shoulder.y - active_hip.y) or 0.40
-        is_side = (shoulder_span_x / torso_height) < SETUP_MAX_SHOULDER_SPAN_RATIO
+        shoulder_span_ratio = shoulder_span_x / torso_height
+        is_side = shoulder_span_ratio < SETUP_MAX_SHOULDER_SPAN_RATIO
 
-        # Upper arm pinned along ribs check
-        is_elbow_pinned_properly = upper_arm_angle <= SETUP_UPPER_ARM_PINNED_ANGLE
+        is_torso_hinged = torso_angle <= SETUP_TORSO_MAX_ANGLE
+        # Upper arm must run along the torso (elbow by the rib cage), not hang vertically
+        # under the shoulder. Combined with the hinge check, this separates a kickback
+        # setup from a standing curl setup.
+        is_shoulder_elbow_aligned = upper_arm_angle <= SETUP_UPPER_ARM_PINNED_ANGLE
 
-        # Forearm vertical check: Hand (wrist) directly under the elbow (gravity line)
-        forearm_len = np.hypot(active_wrist.x - active_elbow.x, active_wrist.y - active_elbow.y) or 0.25
-        forearm_drift = abs(active_wrist.x - active_elbow.x) / forearm_len
-        is_forearm_vertical = (forearm_drift <= MAX_FOREARM_VERTICAL_DRIFT) and (active_wrist.y > active_elbow.y)
+        forearm_dx = active_wrist.x - active_elbow.x
+        forearm_dy = active_wrist.y - active_elbow.y
+        forearm_angle_horiz = np.degrees(np.arctan2(abs(forearm_dy), abs(forearm_dx)))
+        is_forearm_vertical = (MIN_FOREARM_HORIZONTAL_ANGLE <= forearm_angle_horiz <= MAX_FOREARM_HORIZONTAL_ANGLE) or (active_wrist.y > active_elbow.y)
 
-        # Setup: Hinge torso, arm pinned, hand vertical under elbow, flexed <= 110°
         is_in_hinge = (
-            (torso_angle <= SETUP_TORSO_MAX_ANGLE)
-            and is_elbow_pinned_properly
+            is_side
+            and is_torso_hinged
+            and is_shoulder_elbow_aligned
             and is_forearm_vertical
-            and is_side
             and (elbow_angle <= SETUP_ELBOW_START_MAX_ANGLE)
         )
 
-        # ------------------------------------------------------------------
+        # -----------------
         # 1. SETUP GUARD
-        # ------------------------------------------------------------------
+        # -----------------
         if is_in_hinge:
             self.standing_frames += 1
             if self.baseline_torso_angle is None:
@@ -233,17 +239,32 @@ class DumbbellKickbackTracker:
         else:
             self.standing_frames = max(0, self.standing_frames - 1)
 
+        # Previously is_ready stayed True forever once set, so standing up or switching
+        # to another movement kept counting reps. Drop readiness if the hinge setup is
+        # lost while no rep is in progress.
+        if self.is_ready and not self.rep_in_progress and self.state in ["READY", "WAITING"]:
+            if is_in_hinge:
+                self.setup_lost_frames = 0
+            else:
+                self.setup_lost_frames += 1
+                if self.setup_lost_frames >= SETUP_LOST_RESET_FRAMES:
+                    self.is_ready = False
+                    self.setup_lost_frames = 0
+                    self.standing_frames = 0
+                    self.state = "WAITING"
+                    self.baseline_torso_angle = None
+
         if not self.is_ready and self.state != "LOCKED_FAULT":
             self.state = "WAITING"
             self.frame_buffer.clear()
             if not is_side:
                 feedback_msg = "Turn sideways to camera"
-            elif torso_angle > SETUP_TORSO_MAX_ANGLE:
-                feedback_msg = "Hinge forward at hips (~45°)"
-            elif not is_elbow_pinned_properly:
-                feedback_msg = "Pin upper arm up against ribs"
+            elif not is_torso_hinged:
+                feedback_msg = "Hinge forward so your torso is horizontal or sloped"
+            elif not is_shoulder_elbow_aligned:
+                feedback_msg = "Pin your upper arm along your torso, elbow by your ribs"
             elif not is_forearm_vertical:
-                feedback_msg = "Let hand hang straight down vertically under elbow"
+                feedback_msg = "Let your forearm hang straight down vertically"
             else:
                 feedback_msg = "Hold position to start..."
 
@@ -261,7 +282,6 @@ class DumbbellKickbackTracker:
                 "depth_reached": False
             }
 
-        # Orientation & Direction Vectors
         torso_vec_x = active_hip.x - active_shoulder.x
         torso_vec_y = active_hip.y - active_shoulder.y
         torso_mag = np.hypot(torso_vec_x, torso_vec_y) or 1e-4
@@ -271,13 +291,16 @@ class DumbbellKickbackTracker:
         forearm_vec_x = active_wrist.x - active_elbow.x
         forearm_vec_y = active_wrist.y - active_elbow.y
         posterior_projection = (forearm_vec_x * unit_torso_x) + (forearm_vec_y * unit_torso_y)
+        forearm_len = np.hypot(forearm_vec_x, forearm_vec_y) or 1e-4
+        # 1.0 = forearm parallel to torso pointing back toward the hips (true kickback lockout)
+        forearm_alignment = posterior_projection / forearm_len
 
         dist_wrist_to_shoulder = np.hypot(active_wrist.x - active_shoulder.x, active_wrist.y - active_shoulder.y)
         dist_elbow_to_shoulder = np.hypot(active_elbow.x - active_shoulder.x, active_elbow.y - active_shoulder.y)
 
-        # ------------------------------------------------------------------
-        # 2. ST-GCN TEMPORAL BUFFER
-        # ------------------------------------------------------------------
+        # -----------------
+        # 2. ST-GCN BUFFER
+        # -----------------
         frame_coords = self._extract_body_keypoints(landmarks)
         self.frame_buffer.append(frame_coords)
 
@@ -295,75 +318,112 @@ class DumbbellKickbackTracker:
                 if bad_posture_prob >= ML_FAULT_CONFIDENCE_THRESHOLD and self.state not in ["WAITING", "READY", "LOCKED_FAULT"]:
                     self.ml_fault_frames += 1
                     if self.ml_fault_frames >= DEBOUNCE_ML_FAULT:
+                        if self.ml_posture_maintained:
+                            print(
+                                f"[KICKBACK FAULT] AI ST-GCN flagged bad posture: prob={bad_posture_prob:.2f} "
+                                f"(threshold={ML_FAULT_CONFIDENCE_THRESHOLD}), state={self.state}",
+                                flush=True,
+                            )
                         self.ml_posture_maintained = False
                 else:
                     self.ml_fault_frames = max(0, self.ml_fault_frames - 1)
             except Exception:
                 pass
 
-        # ------------------------------------------------------------------
-        # 3. KINEMATIC TRIPWIRES
-        # ------------------------------------------------------------------
+        # -----------------
+        # 3. TRIPWIRES
+        # -----------------
         if self.rep_in_progress and self.state in ["EXTENDING", "LOCKED", "RETURNING"]:
             if not is_side:
                 self.profile_frames += 1
                 if self.profile_frames >= DEBOUNCE_PROFILE:
+                    if self.is_side_view:
+                        print(
+                            f"[KICKBACK FAULT] Lost side view: shoulder_span_ratio={shoulder_span_ratio:.2f} "
+                            f"(max={SETUP_MAX_SHOULDER_SPAN_RATIO})",
+                            flush=True,
+                        )
                     self.is_side_view = False
             else:
                 self.profile_frames = max(0, self.profile_frames - 1)
 
-            # Torso standing up cheat
             if torso_angle > MAX_TORSO_UPRIGHT_ANGLE:
                 self.torso_frames += 1
                 if self.torso_frames >= DEBOUNCE_TORSO:
+                    if self.torso_hinged:
+                        print(
+                            f"[KICKBACK FAULT] Torso upright cheat: torso_angle={torso_angle:.1f}° "
+                            f"(max={MAX_TORSO_UPRIGHT_ANGLE}°)",
+                            flush=True,
+                        )
                     self.torso_hinged = False
             else:
                 self.torso_frames = max(0, self.torso_frames - 1)
 
-            # Dropping elbow toward floor
             if upper_arm_angle > MAX_UPPER_ARM_DROP_ANGLE and active_elbow.y > active_shoulder.y:
                 self.elbow_drop_frames += 1
                 if self.elbow_drop_frames >= DEBOUNCE_ELBOW_DROP:
+                    if self.elbow_pinned:
+                        print(
+                            f"[KICKBACK FAULT] Dropped elbow: upper_arm_angle={upper_arm_angle:.1f}° "
+                            f"(max={MAX_UPPER_ARM_DROP_ANGLE}°)",
+                            flush=True,
+                        )
                     self.elbow_pinned = False
             else:
                 self.elbow_drop_frames = max(0, self.elbow_drop_frames - 1)
 
-            # Arm Overextension
             is_elbow_overextended = active_elbow.y < (min(active_shoulder.y, active_hip.y) - 0.05)
             if is_elbow_overextended or (upper_arm_angle > MAX_ELBOW_HIKE_ANGLE and active_elbow.y < active_shoulder.y):
                 self.overextension_frames += 1
                 if self.overextension_frames >= DEBOUNCE_OVEREXTENSION:
+                    if self.arm_not_overextended:
+                        print(
+                            f"[KICKBACK FAULT] Arm overextended/hiked: upper_arm_angle={upper_arm_angle:.1f}° "
+                            f"(max={MAX_ELBOW_HIKE_ANGLE}°)",
+                            flush=True,
+                        )
                     self.arm_not_overextended = False
             else:
                 self.overextension_frames = max(0, self.overextension_frames - 1)
 
-            # Bicep Curl / Anterior Swing Cheat
             is_curling = (
                 (dist_wrist_to_shoulder < (dist_elbow_to_shoulder * 0.95))
                 or (posterior_projection < 0.0)
-                or (active_wrist.y < active_elbow.y and elbow_angle < 125)
+                or (active_wrist.y < active_elbow.y and elbow_angle < 120)
             )
             if is_curling:
                 self.curl_detected_frames += 1
                 if self.curl_detected_frames >= DEBOUNCE_CURL:
+                    if self.wrist_behind_elbow:
+                        print(
+                            f"[KICKBACK FAULT] Bicep curl / front swing cheat: posterior_projection={posterior_projection:.3f}, "
+                            f"elbow_angle={elbow_angle:.1f}°",
+                            flush=True,
+                        )
                     self.wrist_behind_elbow = False
             else:
                 self.curl_detected_frames = max(0, self.curl_detected_frames - 1)
 
-            # Torso heave / momentum check
             if self.baseline_torso_angle is not None:
                 if abs(torso_angle - self.baseline_torso_angle) > MAX_TORSO_HEAVE_DELTA:
                     self.heave_frames += 1
                     if self.heave_frames >= DEBOUNCE_HEAVE:
+                        if self.no_torso_heave:
+                            print(
+                                f"[KICKBACK FAULT] Torso heave / momentum: angle_delta={abs(torso_angle - self.baseline_torso_angle):.1f}° "
+                                f"(max={MAX_TORSO_HEAVE_DELTA}°)",
+                                flush=True,
+                            )
                         self.no_torso_heave = False
                 else:
                     self.heave_frames = max(0, self.heave_frames - 1)
 
             self.max_extension = max(self.max_extension, elbow_angle)
 
-        # ------------------------------------------------------------------
-        # 4. STATE MACHINE (WITH LOCKED_FAULT FREEZE)
-        # ------------------------------------------------------------------
+        # -----------------
+        # 4. STATE MACHINE
+        # -----------------
         if self.state == "LOCKED_FAULT":
             if is_in_hinge:
                 self.unlock_frames += 1
@@ -395,9 +455,8 @@ class DumbbellKickbackTracker:
             if self.post_rep_timer == 0:
                 self.current_feedback = "Extend your forearm straight back!"
 
-        # Extension begins
         elif self.state in ["READY", "RETURNING"] and elbow_angle > EXTENDING_START_ELBOW_ANGLE:
-            if posterior_projection > 0.02 and dist_wrist_to_shoulder > dist_elbow_to_shoulder:
+            if posterior_projection > 0.01 and dist_wrist_to_shoulder > dist_elbow_to_shoulder:
                 self.state = "EXTENDING"
                 self.rep_in_progress = True
                 self.max_extension = elbow_angle
@@ -405,17 +464,23 @@ class DumbbellKickbackTracker:
                 if self.post_rep_timer == 0:
                     self.current_feedback = "Lock arm straight back..."
 
-        # Full Lockout (>= 155°)
         elif self.state == "EXTENDING" and elbow_angle >= FULL_LOCKOUT_MIN_ANGLE:
-            if posterior_projection > 0.08 and dist_wrist_to_shoulder > dist_elbow_to_shoulder:
+            if (
+                posterior_projection > 0.05
+                and forearm_alignment >= LOCKOUT_MIN_FOREARM_ALIGNMENT
+                and dist_wrist_to_shoulder > dist_elbow_to_shoulder
+                and is_torso_hinged
+            ):
                 self.target_reached = True
                 self.state = "LOCKED"
                 if self.post_rep_timer == 0:
                     self.current_feedback = "Full triceps contraction! Lower under control."
-            else:
+            elif not (posterior_projection > 0.05 and dist_wrist_to_shoulder > dist_elbow_to_shoulder):
+                # Arm is straight but the forearm is not behind the elbow: curl / front swing
                 self.wrist_behind_elbow = False
+            # Otherwise (e.g. forearm only slightly off-axis): stay in EXTENDING and keep
+            # checking; lockout simply isn't credited until the forearm lines up.
 
-        # Incomplete Rep reversal (Half rep branch)
         elif self.state == "EXTENDING" and not self.target_reached and (self.max_extension - elbow_angle) > EARLY_REVERSAL_DELTA:
             self.reversal_frames += 1
             if self.reversal_frames >= DEBOUNCE_HALF_REP:
@@ -423,23 +488,32 @@ class DumbbellKickbackTracker:
                     self.half_ext_reached = True
                 self.state = "RETURNING"
                 self.current_feedback = "Incomplete extension! Returning forearm early..."
+                print(
+                    f"[KICKBACK FAULT] Early reversal: max_extension={self.max_extension:.1f}° "
+                    f"(required >= {FULL_LOCKOUT_MIN_ANGLE}°)",
+                    flush=True,
+                )
 
         elif self.state == "LOCKED" and elbow_angle < RETURNING_START_ELBOW_ANGLE:
             self.state = "RETURNING"
             if self.post_rep_timer == 0:
                 self.current_feedback = "Control the weight forward"
 
-        # Decay reversal frames if extending normally
         if self.state == "EXTENDING" and not ((self.max_extension - elbow_angle) > EARLY_REVERSAL_DELTA):
             self.reversal_frames = max(0, self.reversal_frames - 1)
 
-        # Eccentric drop detector with decaying debounce
         if self.rep_in_progress and self.state in ["RETURNING", "EXTENDING"]:
             if self.prev_elbow_angle is not None:
                 drop_speed = self.prev_elbow_angle - elbow_angle
                 if drop_speed > ECCENTRIC_DROP_SPEED_MAX:
                     self.drop_frames += 1
                     if self.drop_frames >= DEBOUNCE_DROP:
+                        if self.controlled_eccentric:
+                            print(
+                                f"[KICKBACK FAULT] Uncontrolled drop speed: {drop_speed:.1f} deg/frame "
+                                f"(max={ECCENTRIC_DROP_SPEED_MAX})",
+                                flush=True,
+                            )
                         self.controlled_eccentric = False
                 else:
                     self.drop_frames = max(0, self.drop_frames - 1)
@@ -447,14 +521,13 @@ class DumbbellKickbackTracker:
         else:
             self.prev_elbow_angle = None
 
-        # ------------------------------------------------------------------
-        # 5. REP COMPLETION & EVALUATION
-        # ------------------------------------------------------------------
+        # -----------------
+        # 5. REP COMPLETION
+        # -----------------
         if self.rep_in_progress and self.state in ["RETURNING", "LOCKED", "EXTENDING"] and elbow_angle <= REP_COMPLETE_ELBOW_ANGLE:
             is_bad_rep = False
             is_half_rep = False
 
-            # Form cheats check
             if not self.is_side_view:
                 self.current_feedback = "Bad rep: Stand sideways to the camera! Reset in hinge."
                 is_bad_rep = True
@@ -481,32 +554,49 @@ class DumbbellKickbackTracker:
                 is_bad_rep = True
             elif not self.target_reached:
                 if self.max_extension >= HALF_EXT_THRESHOLD_ANGLE or self.half_ext_reached:
-                    self.current_feedback = "Half rep: Full extension not reached! Extend arm back fully."
+                    self.current_feedback = "Bad rep: Half rep! Full extension not reached. Extend arm back fully to reset."
                     is_half_rep = True
                 else:
-                    self.current_feedback = "Bad rep: Movement was too shallow! Lock arm out."
+                    self.current_feedback = "Bad rep: Movement was too shallow! Lock arm out to reset."
                     is_bad_rep = True
 
-            # Rep counting logic
+            rep_num = self.good_reps + self.bad_reps + self.half_reps + 1
             if is_bad_rep:
                 self.bad_reps += 1
+                print(
+                    f"[KICKBACK REP #{rep_num} -> BAD REP] "
+                    f"Reason: {self.current_feedback} | max_extension={self.max_extension:.1f}°",
+                    flush=True,
+                )
                 self.state = "LOCKED_FAULT"
                 self.unlock_frames = 0
                 self._reset_rep_tracking()
             elif is_half_rep:
-                self.half_reps += 1
-                self.state = "READY"
+                self.bad_reps += 1
+                print(
+                    f"[KICKBACK REP #{rep_num} -> BAD REP (HALF REP)] "
+                    f"Reason: {self.current_feedback} | max_extension={self.max_extension:.1f}°",
+                    flush=True,
+                )
+                self.state = "LOCKED_FAULT"
+                self.unlock_frames = 0
                 self._reset_rep_tracking()
             else:
                 self.good_reps += 1
                 self.current_feedback = "Clean kickback! Good rep."
+                print(
+                    f"[KICKBACK REP #{rep_num} -> GOOD REP] "
+                    f"max_extension={self.max_extension:.1f}°",
+                    flush=True,
+                )
                 self.state = "READY"
                 self._reset_rep_tracking()
 
             self.post_rep_timer = POST_REP_FEEDBACK_FRAMES
 
         # Dynamic Scoring
-        form_score = max(0, min(100, int((elbow_angle / 155) * 100)))
+        form_score = max(0, min(100, int((elbow_angle / 148) * 100)))
+        if not self.is_side_view: form_score -= 35
         if not self.torso_hinged: form_score -= 30
         if not self.elbow_pinned: form_score -= 35
         if not self.arm_not_overextended: form_score -= 25

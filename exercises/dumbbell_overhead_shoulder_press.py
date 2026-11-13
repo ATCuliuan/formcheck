@@ -14,8 +14,6 @@ SETUP_RACKED_MAX_ELBOW_ANGLE = 120.0 # Elbows bent below this to count as racked
 SETUP_WRIST_HIP_MARGIN = 0.06        # Wrists must be held above hips by at least this normalized margin
 SETUP_MIN_READY_FRAMES = 5           # Frames required holding racked stance to transition to READY
 UNLOCK_RESET_FRAMES = 15             # Frames held in racked stance to clear LOCKED_FAULT (~0.5s)
-BASELINE_EXPONENTIAL_ALPHA = 0.90    # Moving average decay for baselines
-BASELINE_NEW_SAMPLE_WEIGHT = 0.10    # Update weight for new incoming baseline sample
 
 # 2. Kinematic & Form Thresholds
 STRAIGHT_ARM_SWING_ANGLE = 135.0     # Angle cutoff flagging arms extended too low below chest
@@ -23,9 +21,8 @@ SWING_WRIST_SHOULDER_MARGIN = 0.05   # Hands below shoulder level margin flaggin
 MAX_ELBOW_FLARE_RATIO = 0.45         # Max horizontal elbow flare displacement / shoulder width
 MAX_TORSO_LATERAL_OFFSET = 0.09      # Mid-shoulder to mid-hip lateral difference limit (spine lean)
 MAX_WRIST_ASYMMETRY = 0.14           # Max vertical difference between left and right wrists
-KNEE_BOUNCE_HIP_DROP = 0.06          # Normalized vertical hip drop indicating leg push
-KNEE_BOUNCE_ANGLE_DELTA = 6.0        # Degrees of knee flexion indicating leg bounce drive
 MIN_KEYPOINT_VISIBILITY = 0.35       # Minimum landmark confidence for front view
+MIN_FRONT_SHOULDER_SPAN_RATIO = 0.30 # Shoulder span / torso height below this means turned sideways (side view)
 
 # 3. Press Depth, Extension & Range of Motion
 FULL_LOCKOUT_MIN_ANGLE = 155.0       # Minimum elbow angle required for full overhead lockout credit
@@ -39,8 +36,8 @@ REP_COMPLETE_ELBOW_ANGLE = 120.0     # Return angle to racked stance evaluating 
 DEBOUNCE_FLARE = 3                   # Frames before flagging elbow flare
 DEBOUNCE_TORSO = 3                   # Frames before flagging lateral lean
 DEBOUNCE_EVEN = 3                    # Frames before flagging asymmetric press
-DEBOUNCE_KNEE = 2                    # Frames before flagging knee momentum bounce
 DEBOUNCE_HALF_PRESS = 2              # Frames before confirming premature reversal
+DEBOUNCE_VIEW = 3                    # Frames before flagging a side view (not facing camera)
 
 # 5. Model & Buffer Settings
 SEQUENCE_LENGTH = 30                 # ST-GCN temporal frame buffer size
@@ -67,17 +64,13 @@ class DumbbellOverheadShoulderPressTracker:
         self.torso_upright = True
         self.arms_even = True
         self.ml_posture_maintained = True
-
-        # Advisory / Warning Flags
-        self.knee_bounce_warning = False
-        self.baseline_knee_angle = None
-        self.baseline_hip_y = None
+        self.is_front_view = True
 
         # Debounce counters
         self.flare_frames = 0
         self.torso_frames = 0
         self.even_frames = 0
-        self.knee_frames = 0
+        self.view_frames = 0
 
         self.is_ready = False
         self.racked_frames = 0
@@ -122,13 +115,13 @@ class DumbbellOverheadShoulderPressTracker:
         self.flare_frames = 0
         self.torso_frames = 0
         self.even_frames = 0
-        self.knee_frames = 0
+        self.view_frames = 0
 
         self.arm_path_aligned = True
         self.torso_upright = True
         self.arms_even = True
         self.ml_posture_maintained = True
-        self.knee_bounce_warning = False
+        self.is_front_view = True
 
         self.frame_buffer.clear()
 
@@ -141,10 +134,6 @@ class DumbbellOverheadShoulderPressTracker:
         r_wrist = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST.value]
         l_hip = landmarks[self.mp_pose.PoseLandmark.LEFT_HIP.value]
         r_hip = landmarks[self.mp_pose.PoseLandmark.RIGHT_HIP.value]
-        l_knee = landmarks[self.mp_pose.PoseLandmark.LEFT_KNEE.value]
-        r_knee = landmarks[self.mp_pose.PoseLandmark.RIGHT_KNEE.value]
-        l_ankle = landmarks[self.mp_pose.PoseLandmark.LEFT_ANKLE.value]
-        r_ankle = landmarks[self.mp_pose.PoseLandmark.RIGHT_ANKLE.value]
 
         vis_all = [
             l_shoulder.visibility, r_shoulder.visibility,
@@ -172,14 +161,6 @@ class DumbbellOverheadShoulderPressTracker:
         min_elbow_angle = min(l_elbow_angle, r_elbow_angle)
         max_elbow_angle = max(l_elbow_angle, r_elbow_angle)
 
-        # Bilateral knee angles
-        has_legs_visible = (l_knee.visibility > 0.40 and l_ankle.visibility > 0.40) or (r_knee.visibility > 0.40 and r_ankle.visibility > 0.40)
-        current_knee_angle = None
-        if has_legs_visible:
-            l_knee_angle = calculate_angle(l_hip, l_knee, l_ankle)
-            r_knee_angle = calculate_angle(r_hip, r_knee, r_ankle)
-            current_knee_angle = min(l_knee_angle, r_knee_angle)
-
         shoulder_width = abs(l_shoulder.x - r_shoulder.x) or 0.30
         current_hip_y = (l_hip.y + r_hip.y) / 2.0
         avg_shoulder_y = (l_shoulder.y + r_shoulder.y) / 2.0
@@ -195,16 +176,6 @@ class DumbbellOverheadShoulderPressTracker:
             self.racked_frames += 1
             if self.racked_frames > SETUP_MIN_READY_FRAMES:
                 self.is_ready = True
-                if self.baseline_hip_y is None:
-                    self.baseline_hip_y = current_hip_y
-                else:
-                    self.baseline_hip_y = BASELINE_EXPONENTIAL_ALPHA * self.baseline_hip_y + BASELINE_NEW_SAMPLE_WEIGHT * current_hip_y
-
-                if current_knee_angle is not None:
-                    if self.baseline_knee_angle is None:
-                        self.baseline_knee_angle = current_knee_angle
-                    else:
-                        self.baseline_knee_angle = BASELINE_EXPONENTIAL_ALPHA * self.baseline_knee_angle + BASELINE_NEW_SAMPLE_WEIGHT * current_knee_angle
         else:
             self.racked_frames = max(0, self.racked_frames - 1)
 
@@ -231,6 +202,16 @@ class DumbbellOverheadShoulderPressTracker:
         # 3. KINEMATIC TRIPWIRES
         # ---------------------------------------------------------------------
         if self.state in ["RACKED", "PRESSING", "TOP", "LOWERING"]:
+            # 0. Side View Check (turned sideways to the camera)
+            torso_height = abs(avg_shoulder_y - current_hip_y) or 0.40
+            shoulder_span_ratio = abs(l_shoulder.x - r_shoulder.x) / torso_height
+            if shoulder_span_ratio < MIN_FRONT_SHOULDER_SPAN_RATIO:
+                self.view_frames += 1
+                if self.view_frames >= DEBOUNCE_VIEW:
+                    self.is_front_view = False
+            else:
+                self.view_frames = max(0, self.view_frames - 1)
+
             # A. Catch Straight-Arm Swing
             hands_low = (l_wrist.y > (avg_shoulder_y + SWING_WRIST_SHOULDER_MARGIN)) or (r_wrist.y > (avg_shoulder_y + SWING_WRIST_SHOULDER_MARGIN))
             if hands_low and (min_elbow_angle > STRAIGHT_ARM_SWING_ANGLE):
@@ -263,20 +244,6 @@ class DumbbellOverheadShoulderPressTracker:
                     self.arms_even = False
             else:
                 self.even_frames = max(0, self.even_frames - 1)
-
-            # E. Knee Bounce / Push-Press Momentum
-            hip_drop_normalized = (current_hip_y - self.baseline_hip_y) / shoulder_width if self.baseline_hip_y else 0.0
-            knee_deflection = 0.0
-            if self.baseline_knee_angle is not None and current_knee_angle is not None:
-                knee_deflection = abs(current_knee_angle - self.baseline_knee_angle)
-
-            is_bouncing = (hip_drop_normalized > KNEE_BOUNCE_HIP_DROP) or (knee_deflection > KNEE_BOUNCE_ANGLE_DELTA)
-            if is_bouncing and self.state in ["RACKED", "PRESSING"]:
-                self.knee_frames += 1
-                if self.knee_frames >= DEBOUNCE_KNEE:
-                    self.knee_bounce_warning = True
-            else:
-                self.knee_frames = max(0, self.knee_frames - 1)
 
             self.max_reach_angle = max(self.max_reach_angle, min_elbow_angle)
 
@@ -350,7 +317,10 @@ class DumbbellOverheadShoulderPressTracker:
         if self.state in ["LOWERING", "TOP", "PRESSING"] and (self.lockout_reached or self.half_press_reached) and max_elbow_angle <= REP_COMPLETE_ELBOW_ANGLE:
             is_bad_rep = False
 
-            if self.straight_arm_swing or not self.started_from_racked:
+            if not self.is_front_view:
+                self.current_feedback = "Bad rep: Face the camera! Do not turn sideways."
+                is_bad_rep = True
+            elif self.straight_arm_swing or not self.started_from_racked:
                 self.current_feedback = "Bad rep: Do not swing arms from waist! Press from shoulder level."
                 is_bad_rep = True
             elif not self.arm_path_aligned:
@@ -366,7 +336,10 @@ class DumbbellOverheadShoulderPressTracker:
                 self.current_feedback = "Bad rep: AI detected posture breakdown."
                 is_bad_rep = True
             elif not self.lockout_reached:
-                self.current_feedback = "Bad rep: Incomplete range! Press all the way to full lockout."
+                if self.half_press_reached:
+                    self.current_feedback = "Bad rep: Half rep! Press all the way to full lockout."
+                else:
+                    self.current_feedback = "Bad rep: Incomplete range! Press all the way to full lockout."
                 is_bad_rep = True
 
             # Rep Evaluation
@@ -377,23 +350,17 @@ class DumbbellOverheadShoulderPressTracker:
                 self._reset_rep_tracking(is_proper_racked_stance=is_proper_racked_stance)
             else:
                 self.good_reps += 1
-                if self.knee_bounce_warning:
-                    self.current_feedback = "Good rep! Strict press only, avoid leg bounce."
-                else:
-                    self.current_feedback = "Clean press! Full lockout."
+                self.current_feedback = "Clean press! Full lockout."
                 self.state = "RACKED"
                 self._reset_rep_tracking(is_proper_racked_stance=is_proper_racked_stance)
 
-            if self.baseline_hip_y is not None:
-                self.baseline_hip_y = BASELINE_EXPONENTIAL_ALPHA * self.baseline_hip_y + BASELINE_NEW_SAMPLE_WEIGHT * current_hip_y
-
         # Dynamic Scoring
         form_score = max(0, min(100, int((min_elbow_angle / 160) * 100)))
+        if not self.is_front_view: form_score -= 35
         if not self.arm_path_aligned: form_score -= 30
         if not self.torso_upright: form_score -= 20
         if not self.arms_even: form_score -= 20
         if self.straight_arm_swing: form_score -= 35
-        if self.knee_bounce_warning: form_score -= 10
         if not self.lockout_reached and (self.state in ["PRESSING", "LOWERING", "TOP"]): form_score -= 30
         form_score = max(0, form_score)
 
