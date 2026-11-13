@@ -10,6 +10,7 @@ from core.kinematics import calculate_angle
 # =====================================================================
 
 # 1. Setup & Starting Guard
+SETUP_MAX_SHOULDER_SPAN_RATIO = 0.45 # Standard side profile ratio limit (shoulder X-span / torso length)
 SETUP_ELBOW_MIN_ANGLE = 150.0       # Arms must be extended/locked out (> 150°)
 SETUP_BODY_MIN_ANGLE = 150.0        # Body must form a straight line (> 150°)
 SETUP_FEET_ELEVATION_DELTA = 0.03   # Ankle must be at least this much higher than shoulder (Y axis)
@@ -22,6 +23,8 @@ PIKE_BODY_ANGLE_MAX = 140.0         # Angle below which piking hips are detected
 NECK_MIN_ANGLE = 130.0              # Angle below which neck craning/bending is detected
 MAX_WRIST_Y_DIFF = 0.08             # Vertical height gap allowed between hands on floor
 MAX_WRIST_X_STAGGER = 0.12          # Anterior/posterior horizontal stagger gap allowed between hands
+VERTICAL_CHECK_ELBOW_ANGLE = 120.0  # Check shoulder-to-elbow vertical alignment when lowered <= 120°
+MIN_ELBOW_VERTICAL_DEVIATION_DEG = 38.0 # Below 38° = shoulder & elbow are vertically aligned (BAD REP)
 MIN_SIDE_VISIBILITY = 3.0           # Cumulative visibility required across key lateral landmarks
 
 # 3. Depth, Descent & Range of Motion
@@ -33,11 +36,13 @@ ECCENTRIC_DROP_SPEED_MAX = 22.0     # Maximum drop speed (degrees/frame) before 
 REP_COMPLETE_ELBOW_ANGLE = 150.0    # Elbow lockout angle to evaluate rep completion
 
 # 4. Debounce Frame Thresholds (Higher = More Deliberate detection)
+DEBOUNCE_PROFILE = 4                # Frames before flagging loss of side view
 DEBOUNCE_FLAT = 4                   # Frames before flagging feet dropped to floor level
 DEBOUNCE_SAG = 4                    # Frames before flagging sagging hips (banana back)
 DEBOUNCE_PIKE = 4                   # Frames before flagging piking hips (butt too high)
 DEBOUNCE_NECK = 4                   # Frames before flagging neck craning
 DEBOUNCE_HAND_MISALIGN = 4          # Frames before flagging uneven hand placement
+DEBOUNCE_ELBOW_VERTICAL = 2         # Fast 2-frame latch when shoulder & elbow stay vertically aligned
 DEBOUNCE_DROP = 2                   # Frames before flagging uncontrolled eccentric free-fall
 DEBOUNCE_HALF_REP = 6               # Frames before flagging premature reversal / incomplete depth
 
@@ -59,21 +64,25 @@ class DeclinePushupTracker:
         self.min_elbow_angle = 180.0
 
         # Posture Tripwires (SIDE / SAGITTAL VIEW)
+        self.is_side_view = True
         self.is_decline_elevation = True
         self.core_maintained = True
         self.no_pike = True
         self.neck_neutral = True
         self.controlled_descent = True
         self.hands_aligned = True
+        self.elbow_not_vertical_aligned = True
         self.ml_posture_maintained = True
 
         # Debounce counters
+        self.profile_frames = 0
         self.sag_frames = 0
         self.pike_frames = 0
         self.flat_frames = 0
         self.neck_frames = 0
         self.drop_frames = 0
         self.hand_misalign_frames = 0
+        self.elbow_vertical_frames = 0
         self.half_rep_frames = 0
         self.plank_frames = 0
         self.unlock_frames = 0
@@ -117,20 +126,24 @@ class DeclinePushupTracker:
         self.min_elbow_angle = 180.0
         self.prev_elbow_angle = None
 
+        self.is_side_view = True
         self.is_decline_elevation = True
         self.core_maintained = True
         self.no_pike = True
         self.neck_neutral = True
         self.controlled_descent = True
         self.hands_aligned = True
+        self.elbow_not_vertical_aligned = True
         self.ml_posture_maintained = True
 
+        self.profile_frames = 0
         self.sag_frames = 0
         self.pike_frames = 0
         self.flat_frames = 0
         self.neck_frames = 0
         self.drop_frames = 0
         self.hand_misalign_frames = 0
+        self.elbow_vertical_frames = 0
         self.half_rep_frames = 0
 
         self.frame_buffer.clear()
@@ -186,11 +199,24 @@ class DeclinePushupTracker:
         body_angle = calculate_angle(active_shoulder, active_hip, active_ankle)
         neck_angle = calculate_angle(active_ear, active_shoulder, active_hip)
 
+        # Side View Profile Check (shoulder X-span vs torso length)
+        dx_torso = abs(active_shoulder.x - active_hip.x)
+        dy_torso = abs(active_shoulder.y - active_hip.y)
+        torso_len = max(np.hypot(dx_torso, dy_torso), 0.25)
+        shoulder_span_x = abs(l_shoulder.x - r_shoulder.x)
+        shoulder_span_ratio = shoulder_span_x / torso_len
+        is_side = shoulder_span_ratio < SETUP_MAX_SHOULDER_SPAN_RATIO
+
         # ---------------------------------------------------------
         # 1. SETUP GUARD (Arms locked & feet elevated above shoulders)
         # ---------------------------------------------------------
         is_feet_elevated = active_ankle.y < (active_shoulder.y - SETUP_FEET_ELEVATION_DELTA)
-        is_plank = (elbow_angle > SETUP_ELBOW_MIN_ANGLE) and (body_angle > SETUP_BODY_MIN_ANGLE) and is_feet_elevated
+        is_plank = (
+            is_side
+            and (elbow_angle > SETUP_ELBOW_MIN_ANGLE)
+            and (body_angle > SETUP_BODY_MIN_ANGLE)
+            and is_feet_elevated
+        )
 
         if is_plank:
             self.plank_frames += 1
@@ -203,7 +229,12 @@ class DeclinePushupTracker:
         if not self.is_ready and self.state != "LOCKED_FAULT":
             self.state = "WAITING"
             self.frame_buffer.clear()
-            feedback_msg = "Elevate feet higher on box/bench" if not is_feet_elevated else "Hold decline plank to begin"
+            if not is_side:
+                feedback_msg = "Turn sideways to camera (side view)"
+            elif not is_feet_elevated:
+                feedback_msg = "Elevate feet higher on box/bench"
+            else:
+                feedback_msg = "Hold decline plank to begin"
             return {
                 "exercise": "Decline Pushup",
                 "state": self.state,
@@ -233,6 +264,8 @@ class DeclinePushupTracker:
                 output_data = self.interpreter.get_tensor(self.output_details[0]['index'])
                 predicted_class = np.argmax(output_data, axis=1)[0]
                 if predicted_class == 0 and self.state not in ["PLANKING", "WAITING", "LOCKED_FAULT"]:
+                    if self.ml_posture_maintained:
+                        print(f"[DECLINE PUSHUP FAULT] AI ST-GCN flagged bad posture (class=0, state={self.state})", flush=True)
                     self.ml_posture_maintained = False
             except Exception:
                 pass
@@ -241,10 +274,30 @@ class DeclinePushupTracker:
         # 3. KINEMATIC FORM TRIPWIRES
         # ---------------------------------------------------------
         if self.state in ["DESCENDING", "BOTTOM", "ASCENDING"]:
+            # 0. Side View Profile Check
+            if not is_side:
+                self.profile_frames += 1
+                if self.profile_frames >= DEBOUNCE_PROFILE:
+                    if self.is_side_view:
+                        print(
+                            f"[DECLINE PUSHUP FAULT] Lost side view: shoulder_span_ratio={shoulder_span_ratio:.2f} "
+                            f"(max={SETUP_MAX_SHOULDER_SPAN_RATIO}), frames={self.profile_frames}",
+                            flush=True,
+                        )
+                    self.is_side_view = False
+            else:
+                self.profile_frames = max(0, self.profile_frames - 1)
+
             # A. Feet on floor cheat
             if active_ankle.y > active_shoulder.y:
                 self.flat_frames += 1
                 if self.flat_frames >= DEBOUNCE_FLAT:
+                    if self.is_decline_elevation:
+                        print(
+                            f"[DECLINE PUSHUP FAULT] Feet dropped below shoulders: ankle.y={active_ankle.y:.3f} > "
+                            f"shoulder.y={active_shoulder.y:.3f}, frames={self.flat_frames}",
+                            flush=True,
+                        )
                     self.is_decline_elevation = False
             else:
                 self.flat_frames = max(0, self.flat_frames - 1)
@@ -253,6 +306,12 @@ class DeclinePushupTracker:
             if active_hip.y > active_shoulder.y and body_angle < SAG_BODY_ANGLE_MAX:
                 self.sag_frames += 1
                 if self.sag_frames >= DEBOUNCE_SAG:
+                    if self.core_maintained:
+                        print(
+                            f"[DECLINE PUSHUP FAULT] Core sagging: body_angle={body_angle:.1f}° "
+                            f"(min={SAG_BODY_ANGLE_MAX}°), hip.y={active_hip.y:.3f} > shoulder.y={active_shoulder.y:.3f}",
+                            flush=True,
+                        )
                     self.core_maintained = False
             else:
                 self.sag_frames = max(0, self.sag_frames - 1)
@@ -261,6 +320,12 @@ class DeclinePushupTracker:
             if active_hip.y < active_shoulder.y and body_angle < PIKE_BODY_ANGLE_MAX:
                 self.pike_frames += 1
                 if self.pike_frames >= DEBOUNCE_PIKE:
+                    if self.no_pike:
+                        print(
+                            f"[DECLINE PUSHUP FAULT] Hip piking: body_angle={body_angle:.1f}° "
+                            f"(min={PIKE_BODY_ANGLE_MAX}°), hip.y={active_hip.y:.3f} < shoulder.y={active_shoulder.y:.3f}",
+                            flush=True,
+                        )
                     self.no_pike = False
             else:
                 self.pike_frames = max(0, self.pike_frames - 1)
@@ -269,6 +334,12 @@ class DeclinePushupTracker:
             if neck_angle < NECK_MIN_ANGLE:
                 self.neck_frames += 1
                 if self.neck_frames >= DEBOUNCE_NECK:
+                    if self.neck_neutral:
+                        print(
+                            f"[DECLINE PUSHUP FAULT] Neck craning: neck_angle={neck_angle:.1f}° "
+                            f"(min={NECK_MIN_ANGLE}°), frames={self.neck_frames}",
+                            flush=True,
+                        )
                     self.neck_neutral = False
             else:
                 self.neck_frames = max(0, self.neck_frames - 1)
@@ -281,9 +352,39 @@ class DeclinePushupTracker:
                 if vertical_wrist_diff > MAX_WRIST_Y_DIFF or horizontal_wrist_stagger > MAX_WRIST_X_STAGGER:
                     self.hand_misalign_frames += 1
                     if self.hand_misalign_frames >= DEBOUNCE_HAND_MISALIGN:
+                        if self.hands_aligned:
+                            print(
+                                f"[DECLINE PUSHUP FAULT] Hands misaligned: y_diff={vertical_wrist_diff:.3f} "
+                                f"(max={MAX_WRIST_Y_DIFF}), x_stagger={horizontal_wrist_stagger:.3f} "
+                                f"(max={MAX_WRIST_X_STAGGER})",
+                                flush=True,
+                            )
                         self.hands_aligned = False
                 else:
                     self.hand_misalign_frames = max(0, self.hand_misalign_frames - 1)
+
+            # F. Shoulder-to-Elbow Vertical Alignment Fault (just like Push-Up)
+            # If shoulder and elbow stay vertically aligned when lowered (<= 120°), flag as BAD REP!
+            if self.state in ["DESCENDING", "BOTTOM"] and elbow_angle <= VERTICAL_CHECK_ELBOW_ANGLE:
+                dx_elbow = abs(active_shoulder.x - active_elbow.x)
+                dy_elbow = max(abs(active_elbow.y - active_shoulder.y), 0.02)
+                elbow_vertical_tilt = np.degrees(np.arctan2(dx_elbow, dy_elbow))
+
+                if elbow_vertical_tilt <= MIN_ELBOW_VERTICAL_DEVIATION_DEG:
+                    self.elbow_vertical_frames += 1
+                    if self.elbow_vertical_frames >= DEBOUNCE_ELBOW_VERTICAL or elbow_angle <= FULL_DEPTH_ELBOW_ANGLE:
+                        if self.elbow_not_vertical_aligned:
+                            print(
+                                f"[DECLINE PUSHUP FAULT] Shoulder & elbow vertically aligned (flared): "
+                                f"tilt={elbow_vertical_tilt:.1f}° (must be > {MIN_ELBOW_VERTICAL_DEVIATION_DEG}°), "
+                                f"elbow_angle={elbow_angle:.1f}°",
+                                flush=True,
+                            )
+                        self.elbow_not_vertical_aligned = False
+                else:
+                    self.elbow_vertical_frames = max(0, self.elbow_vertical_frames - 1)
+            else:
+                self.elbow_vertical_frames = max(0, self.elbow_vertical_frames - 1)
 
             self.min_elbow_angle = min(self.min_elbow_angle, elbow_angle)
 
@@ -346,6 +447,11 @@ class DeclinePushupTracker:
             if self.half_rep_frames >= DEBOUNCE_HALF_REP:
                 self.state = "ASCENDING"
                 self.current_feedback = "Perform a full rep! Lower chest all the way to 90°."
+                print(
+                    f"[DECLINE PUSHUP FAULT] Early reversal / half-rep: reversed at min_elbow_angle={self.min_elbow_angle:.1f}° "
+                    f"(required <= {FULL_DEPTH_ELBOW_ANGLE}°)",
+                    flush=True,
+                )
         else:
             self.half_rep_frames = max(0, self.half_rep_frames - 1)
 
@@ -356,6 +462,12 @@ class DeclinePushupTracker:
                 if drop_speed > ECCENTRIC_DROP_SPEED_MAX:
                     self.drop_frames += 1
                     if self.drop_frames >= DEBOUNCE_DROP:
+                        if self.controlled_descent:
+                            print(
+                                f"[DECLINE PUSHUP FAULT] Uncontrolled drop speed: {drop_speed:.1f} deg/frame "
+                                f"(max={ECCENTRIC_DROP_SPEED_MAX})",
+                                flush=True,
+                            )
                         self.controlled_descent = False
                 else:
                     self.drop_frames = max(0, self.drop_frames - 1)
@@ -369,8 +481,14 @@ class DeclinePushupTracker:
         if self.state in ["ASCENDING", "BOTTOM"] and elbow_angle > REP_COMPLETE_ELBOW_ANGLE:
             is_bad_rep = False
 
-            if not self.is_decline_elevation:
+            if not self.is_side_view:
+                self.current_feedback = "Bad rep: Stay in side view! Position body sideways and hold plank to reset."
+                is_bad_rep = True
+            elif not self.is_decline_elevation:
                 self.current_feedback = "Bad rep: Elevate feet! Feet dropped to floor level. Hold plank to reset."
+                is_bad_rep = True
+            elif not self.elbow_not_vertical_aligned:
+                self.current_feedback = "Bad rep: Elbows flared/aligned with shoulders! Tuck elbows back toward chest and hold plank to reset."
                 is_bad_rep = True
             elif not self.hands_aligned:
                 self.current_feedback = "Bad rep: Uneven hand placement! Align hands evenly and hold plank to reset."
@@ -396,12 +514,22 @@ class DeclinePushupTracker:
 
             if is_bad_rep:
                 self.bad_reps += 1
+                print(
+                    f"[DECLINE PUSHUP REP #{self.good_reps + self.bad_reps} -> BAD REP] "
+                    f"Reason: {self.current_feedback} | min_elbow_angle={self.min_elbow_angle:.1f}°",
+                    flush=True,
+                )
                 self.state = "LOCKED_FAULT"
                 self.unlock_frames = 0
                 self._reset_rep_tracking()
             else:
                 self.good_reps += 1
                 self.current_feedback = "Clean decline push-up! Good rep."
+                print(
+                    f"[DECLINE PUSHUP REP #{self.good_reps + self.bad_reps} -> GOOD REP] "
+                    f"min_elbow_angle={self.min_elbow_angle:.1f}°",
+                    flush=True,
+                )
                 self.state = "PLANKING"
                 self._reset_rep_tracking()
 
@@ -409,6 +537,8 @@ class DeclinePushupTracker:
 
         # Dynamic Scoring
         form_score = max(0, min(100, int(100 - abs(elbow_angle - 90) * 0.4)))
+        if not self.is_side_view: form_score -= 35
+        if not self.elbow_not_vertical_aligned: form_score -= 30
         if not self.core_maintained: form_score -= 30
         if not self.no_pike: form_score -= 25
         if not self.is_decline_elevation: form_score -= 35

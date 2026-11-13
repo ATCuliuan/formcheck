@@ -10,49 +10,52 @@ from core.kinematics import calculate_angle
 # =====================================================================
 
 # 1. Setup & Starting Guard
-SETUP_TORSO_MIN_ANGLE = 10.0      # Minimum forward hinge angle to count as setup
-SETUP_TORSO_MAX_ANGLE = 70.0      # Maximum forward hinge angle to count as setup
-SETUP_ELBOW_MIN_ANGLE = 115.0     # Arms must hang extended (> 115°)
-SETUP_MIN_READY_FRAMES = 5        # Frames required in setup to transition to READY
-UNLOCK_RESET_FRAMES = 15          # Frames in setup position required to clear LOCKED_FAULT (~0.5s)
+SETUP_MAX_SHOULDER_SPAN_RATIO = 0.35  # Strict side profile ratio (shoulder X-span / torso length)
+SETUP_TORSO_MIN_ANGLE = 10.0          # Minimum forward hinge angle to count as setup
+SETUP_TORSO_MAX_ANGLE = 70.0          # Maximum forward hinge angle to count as setup
+SETUP_ELBOW_MIN_ANGLE = 115.0         # Arms must hang extended (> 115°)
+SETUP_MIN_READY_FRAMES = 5            # Frames required in setup to transition to READY
+UNLOCK_RESET_FRAMES = 15              # Frames in setup position required to clear LOCKED_FAULT (~0.5s)
+MIN_VISIBILITY_THRESHOLD = 1.6        # Minimum cumulative visibility across core profile joints
 
 # 2. Kinematic Angle Windows & Form Thresholds
-TORSO_MIN_ANGLE = 10.0            # Minimum forward hinge angle during rep
-TORSO_MAX_ANGLE = 72.0            # Maximum torso upright limit during rep
-SHIN_MIN_ANGLE = 80.0             # Minimum shin angle to horizontal
-SHIN_MAX_ANGLE = 100.0            # Maximum shin forward tilt angle
-THIGH_MIN_ANGLE = 48.0            # Minimum knee-to-butt bend angle
-THIGH_MAX_ANGLE = 88.0            # Maximum knee-to-butt bend angle
-KNEE_LOCKOUT_MAX = 168.0          # Knees locked straight cutoff threshold
-SPINE_MIN_ANGLE = 112.0           # Angle below which back rounding is flagged
-FOREARM_MAX_TILT = 50.0           # Forearm tilt angle limit before flagging curling
-FOOT_ALIGN_MAX_OFFSET = 0.10      # Screen-width ankle offset limit before flagging split stance
+TORSO_MIN_ANGLE = 10.0                # Minimum forward hinge angle during rep
+TORSO_MAX_ANGLE = 72.0                # Maximum torso upright limit during rep
+SHIN_MIN_ANGLE = 80.0                 # Minimum shin angle to horizontal
+SHIN_MAX_ANGLE = 100.0                # Maximum shin forward tilt angle
+THIGH_MIN_ANGLE = 48.0                # Minimum knee-to-butt bend angle
+THIGH_MAX_ANGLE = 88.0                # Maximum knee-to-butt bend angle
+KNEE_LOCKOUT_MAX = 168.0              # Knees locked straight cutoff threshold
+SPINE_MIN_ANGLE = 112.0               # Angle below which back rounding is flagged
+FOREARM_MAX_TILT = 50.0               # Forearm tilt angle limit before flagging curling
+FOOT_ALIGN_MAX_OFFSET = 0.10          # Screen-width ankle offset limit before flagging split stance
 
 # 3. Pull Depth, Descent & Range of Motion
-FULL_PULL_ELBOW_ANGLE = 92.0      # Elbow angle required to count full row depth
-ARM_HORIZONTAL_TILT_MAX = 22.0    # Upper arm tilt angle relative to horizontal
-ARM_ELBOW_SHOULDER_Y_MARGIN = 0.035  # Max vertical offset of elbow below shoulder
-PULL_START_ELBOW_ANGLE = 125.0    # Transition threshold from EXTENDED/DESCENDING to ASCENDING
-RETURN_START_ELBOW_ANGLE = 100.0  # Transition threshold from TOP to DESCENDING
-EARLY_REVERSAL_DELTA = 10.0       # Reversal angle delta from peak before full ROM triggers half-rep
-ECCENTRIC_DROP_SPEED_MAX = 35.0   # Angular speed threshold for uncontrolled free-fall drop
-REP_COMPLETE_ELBOW_ANGLE = 128.0  # Arm extension threshold to evaluate rep completion
+FULL_PULL_ELBOW_ANGLE = 92.0          # Elbow angle required to count full row depth
+ARM_HORIZONTAL_TILT_MAX = 22.0        # Upper arm tilt angle relative to horizontal
+ARM_ELBOW_SHOULDER_Y_MARGIN = 0.035   # Max vertical offset of elbow below shoulder
+PULL_START_ELBOW_ANGLE = 125.0        # Transition threshold from EXTENDED/DESCENDING to ASCENDING
+RETURN_START_ELBOW_ANGLE = 100.0      # Transition threshold from TOP to DESCENDING
+EARLY_REVERSAL_DELTA = 10.0           # Reversal angle delta from peak before full ROM triggers half-rep
+ECCENTRIC_DROP_SPEED_MAX = 35.0       # Angular speed threshold for uncontrolled free-fall drop
+REP_COMPLETE_ELBOW_ANGLE = 128.0      # Arm extension threshold to evaluate rep completion
 
 # 4. Debounce Frame Thresholds (Higher = Slower/More Deliberate detection)
-DEBOUNCE_FOOT_ALIGN = 8           # Frames before flagging foot misalignment
-DEBOUNCE_SHIN = 8                 # Frames before flagging shin drift
-DEBOUNCE_KNEE = 8                 # Frames before flagging straight/locked legs
-DEBOUNCE_TORSO = 12               # Frames before flagging improper torso hinge
-DEBOUNCE_SPINE = 8                # Frames before flagging rounded back
-DEBOUNCE_FOREARM = 8              # Frames before flagging bicep curl cheat
-DEBOUNCE_DROP = 3                 # Frames before flagging eccentric free-fall
-DEBOUNCE_HALF_REP = 8             # Frames before flagging premature reversal / incomplete row
-DEBOUNCE_ML = 14                  # Frames before AI model flags bad spinal mechanics
+DEBOUNCE_PROFILE = 2                  # Fast trigger when rotating out of strict side view
+DEBOUNCE_FOOT_ALIGN = 8               # Frames before flagging foot misalignment
+DEBOUNCE_SHIN = 8                     # Frames before flagging shin drift
+DEBOUNCE_KNEE = 8                     # Frames before flagging straight/locked legs
+DEBOUNCE_TORSO = 12                   # Frames before flagging improper torso hinge
+DEBOUNCE_SPINE = 8                    # Frames before flagging rounded back
+DEBOUNCE_FOREARM = 8                  # Frames before flagging bicep curl cheat
+DEBOUNCE_DROP = 3                     # Frames before flagging eccentric free-fall
+DEBOUNCE_HALF_REP = 8                 # Frames before flagging premature reversal / incomplete row
+DEBOUNCE_ML = 14                      # Frames before AI model flags bad spinal mechanics
 
 # 5. Model & Buffer Settings
-ML_CONFIDENCE_THRESHOLD = 0.90    # Minimum model probability to flag bad posture
-SEQUENCE_LENGTH = 30              # ST-GCN temporal frame buffer size
-POST_REP_FEEDBACK_FRAMES = 40     # Duration feedback remains visible post-rep
+ML_CONFIDENCE_THRESHOLD = 0.90        # Minimum model probability to flag bad posture
+SEQUENCE_LENGTH = 30                  # ST-GCN temporal frame buffer size
+POST_REP_FEEDBACK_FRAMES = 40         # Duration feedback remains visible post-rep
 
 # =====================================================================
 
@@ -64,10 +67,12 @@ class BarbellRowTracker:
         self.bad_reps = 0
         self.half_reps = 0
 
+        self.rep_started = False
         self.pull_reached = False
         self.min_elbow_angle = 180.0
 
-        # Biomechanical Tripwires
+        # Biomechanical Tripwires (SIDE / SAGITTAL VIEW)
+        self.is_side_view = True
         self.feet_aligned = True
         self.shin_angle_proper = True
         self.knee_bend_proper = True
@@ -81,6 +86,7 @@ class BarbellRowTracker:
         self.drop_frames = 0
 
         # Debounce counters
+        self.profile_frames = 0
         self.foot_align_frames = 0
         self.shin_frames = 0
         self.knee_frames = 0
@@ -94,7 +100,7 @@ class BarbellRowTracker:
         self.ready_frames = 0
         self.unlock_frames = 0
         self.is_ready = False
-        self.current_feedback = "Hinge at hips, keep knees softly bent (~50°-85°), shins at ~90°"
+        self.current_feedback = "Stand sideways, hinge at hips, keep knees softly bent"
         self.mp_pose = mp.solutions.pose
 
         self.sequence_length = SEQUENCE_LENGTH
@@ -123,10 +129,12 @@ class BarbellRowTracker:
         return np.array(coords, dtype=np.float32)
 
     def _reset_rep_tracking(self):
+        self.rep_started = False
         self.pull_reached = False
         self.min_elbow_angle = 180.0
         self.prev_elbow_angle = None
 
+        self.is_side_view = True
         self.feet_aligned = True
         self.shin_angle_proper = True
         self.knee_bend_proper = True
@@ -136,6 +144,7 @@ class BarbellRowTracker:
         self.controlled_descent = True
         self.ml_posture_maintained = True
 
+        self.profile_frames = 0
         self.foot_align_frames = 0
         self.shin_frames = 0
         self.knee_frames = 0
@@ -173,7 +182,7 @@ class BarbellRowTracker:
         if self.post_rep_timer > 0:
             self.post_rep_timer -= 1
 
-        if max(l_vis, r_vis) < 1.6:
+        if max(l_vis, r_vis) < MIN_VISIBILITY_THRESHOLD:
             self.frame_buffer.clear()
             return {
                 "exercise": "Barbell Row",
@@ -182,10 +191,13 @@ class BarbellRowTracker:
                 "bad_reps": self.bad_reps,
                 "half_reps": self.half_reps,
                 "total_reps": total_reps,
-                "feedback": "Step back to show full body profile",
+                "form_score": 0,
+                "feedback": "Step back to show full body profile (side view)",
                 "elbow_angle": 0.0,
                 "knee_angle": 0.0,
-                "hip_angle": 0.0
+                "hip_angle": 0.0,
+                "shin_angle": 0.0,
+                "thigh_angle": 0.0
             }
 
         active_ear = r_ear if r_vis > l_vis else l_ear
@@ -201,6 +213,13 @@ class BarbellRowTracker:
         raw_knee_angle = calculate_angle(active_hip, active_knee, active_ankle)
         spine_angle = calculate_angle(active_ear, active_shoulder, active_hip)
 
+        # Strict Side View Check (uses 2D torso length since torso is hinged forward)
+        dx_torso = abs(active_shoulder.x - active_hip.x)
+        dy_torso = abs(active_shoulder.y - active_hip.y)
+        torso_len = max(np.hypot(dx_torso, dy_torso), 0.25)
+        shoulder_span_x = abs(l_shoulder.x - r_shoulder.x)
+        is_side = (shoulder_span_x / torso_len) < SETUP_MAX_SHOULDER_SPAN_RATIO
+
         # Knee-to-Butt (Femur/Thigh) Angle from Horizontal Floor Plane
         dx_thigh = abs(active_hip.x - active_knee.x)
         dy_thigh = abs(active_hip.y - active_knee.y)
@@ -210,8 +229,6 @@ class BarbellRowTracker:
         is_thigh_in_bend_window = (THIGH_MIN_ANGLE <= thigh_angle_horizontal <= THIGH_MAX_ANGLE)
 
         # 1. Torso Angle from Horizontal (Hips to Shoulder plane)
-        dx_torso = abs(active_shoulder.x - active_hip.x)
-        dy_torso = abs(active_shoulder.y - active_hip.y)
         torso_angle_horizontal = np.degrees(np.arctan2(dy_torso, dx_torso)) if dx_torso > 0 else 90.0
 
         # 2. Shin Angle to Horizontal Floor (Ankle to Knee vector)
@@ -226,7 +243,10 @@ class BarbellRowTracker:
         dx_arm = abs(active_elbow.x - active_shoulder.x)
         dy_arm = abs(active_elbow.y - active_shoulder.y)
         arm_tilt_from_horizontal = np.degrees(np.arctan2(dy_arm, dx_arm)) if dx_arm > 0 else 90.0
-        is_upper_arm_horizontal = (arm_tilt_from_horizontal <= ARM_HORIZONTAL_TILT_MAX) or (active_elbow.y <= (active_shoulder.y + ARM_ELBOW_SHOULDER_Y_MARGIN))
+        is_upper_arm_horizontal = (
+            (arm_tilt_from_horizontal <= ARM_HORIZONTAL_TILT_MAX)
+            or (active_elbow.y <= (active_shoulder.y + ARM_ELBOW_SHOULDER_Y_MARGIN))
+        )
 
         # 5. Forearm Angle
         dx_forearm = abs(active_wrist.x - active_elbow.x)
@@ -236,7 +256,12 @@ class BarbellRowTracker:
         # ---------------------------------------------------------
         # 1. SETUP GUARD
         # ---------------------------------------------------------
-        is_in_hinge = (SETUP_TORSO_MIN_ANGLE <= torso_angle_horizontal <= SETUP_TORSO_MAX_ANGLE) and (elbow_angle > SETUP_ELBOW_MIN_ANGLE) and (not is_knee_locked_straight)
+        is_in_hinge = (
+            is_side
+            and (SETUP_TORSO_MIN_ANGLE <= torso_angle_horizontal <= SETUP_TORSO_MAX_ANGLE)
+            and (elbow_angle > SETUP_ELBOW_MIN_ANGLE)
+            and (not is_knee_locked_straight)
+        )
 
         if is_in_hinge:
             self.ready_frames += 1
@@ -249,7 +274,12 @@ class BarbellRowTracker:
         if not self.is_ready and self.state != "LOCKED_FAULT":
             self.state = "WAITING"
             self.frame_buffer.clear()
-            feedback_msg = "Bend knees slightly, avoid locking legs" if is_knee_locked_straight else "Hinge at hips, keep knees soft, let arms hang down"
+            if not is_side:
+                feedback_msg = "Turn sideways to camera (side view)"
+            elif is_knee_locked_straight:
+                feedback_msg = "Bend knees slightly, avoid locking legs"
+            else:
+                feedback_msg = "Hinge at hips, keep knees soft, let arms hang down"
             return {
                 "exercise": "Barbell Row",
                 "state": self.state,
@@ -257,10 +287,13 @@ class BarbellRowTracker:
                 "bad_reps": self.bad_reps,
                 "half_reps": self.half_reps,
                 "total_reps": total_reps,
+                "form_score": 0,
                 "feedback": feedback_msg,
                 "elbow_angle": round(elbow_angle, 1),
                 "knee_angle": round(raw_knee_angle, 1),
-                "hip_angle": round(torso_angle_horizontal, 1)
+                "hip_angle": round(torso_angle_horizontal, 1),
+                "shin_angle": round(shin_angle_horizontal, 1),
+                "thigh_angle": round(thigh_angle_horizontal, 1)
             }
 
         # ---------------------------------------------------------
@@ -289,9 +322,17 @@ class BarbellRowTracker:
                 pass
 
         # ---------------------------------------------------------
-        # 3. KINEMATIC TRIPWIRES
+        # 3. KINEMATIC TRIPWIRES (ONLY DURING ACTIVE REP)
         # ---------------------------------------------------------
-        if self.state in ["EXTENDED", "ASCENDING", "TOP", "DESCENDING"]:
+        if self.state in ["ASCENDING", "TOP", "DESCENDING"]:
+            # 0. Strict Side View Profile Check
+            if not is_side:
+                self.profile_frames += 1
+                if self.profile_frames >= DEBOUNCE_PROFILE:
+                    self.is_side_view = False
+            else:
+                self.profile_frames = max(0, self.profile_frames - 1)
+
             # A. Foot Alignment Check
             if ankle_x_offset > FOOT_ALIGN_MAX_OFFSET:
                 self.foot_align_frames += 1
@@ -363,6 +404,7 @@ class BarbellRowTracker:
                 "bad_reps": self.bad_reps,
                 "half_reps": self.half_reps,
                 "total_reps": total_reps,
+                "form_score": 0,
                 "feedback": self.current_feedback,
                 "elbow_angle": round(elbow_angle, 1),
                 "knee_angle": round(raw_knee_angle, 1),
@@ -378,6 +420,7 @@ class BarbellRowTracker:
 
         elif self.state in ["EXTENDED", "DESCENDING"] and elbow_angle < PULL_START_ELBOW_ANGLE:
             self.state = "ASCENDING"
+            self.rep_started = True
             self.min_elbow_angle = elbow_angle
             self.half_rep_frames = 0
             if self.post_rep_timer == 0:
@@ -420,12 +463,15 @@ class BarbellRowTracker:
             self.prev_elbow_angle = None
 
         # ---------------------------------------------------------
-        # 5. REP COMPLETION & EVALUATION (ONLY ON DESCENDING OR TOP)
+        # 5. REP COMPLETION & EVALUATION
         # ---------------------------------------------------------
-        if self.state in ["DESCENDING", "TOP"] and elbow_angle >= REP_COMPLETE_ELBOW_ANGLE:
+        if self.state in ["DESCENDING", "TOP", "ASCENDING"] and self.rep_started and elbow_angle >= REP_COMPLETE_ELBOW_ANGLE:
             is_bad_rep = False
 
-            if not self.knee_bend_proper:
+            if not self.is_side_view:
+                self.current_feedback = "Bad rep: Stay in side view! Stand sideways and hinge at hips to reset."
+                is_bad_rep = True
+            elif not self.knee_bend_proper:
                 self.current_feedback = "Bad rep: Do not lock knees! Soften knees and return to start to reset."
                 is_bad_rep = True
             elif not self.feet_aligned:
@@ -466,6 +512,20 @@ class BarbellRowTracker:
 
             self.post_rep_timer = POST_REP_FEEDBACK_FRAMES
 
+        # Dynamic Form Score Calculation
+        form_score = max(0, min(100, int(((150 - elbow_angle) / 60) * 100))) if self.state != "EXTENDED" else 100
+        if not self.is_side_view: form_score -= 35
+        if not self.knee_bend_proper: form_score -= 25
+        if not self.feet_aligned: form_score -= 15
+        if not self.shin_angle_proper: form_score -= 15
+        if not self.torso_angle_proper: form_score -= 25
+        if not self.neutral_spine: form_score -= 30
+        if not self.forearm_path_correct: form_score -= 20
+        if not self.controlled_descent: form_score -= 20
+        if not self.ml_posture_maintained: form_score -= 25
+        if not self.pull_reached and self.rep_started: form_score -= 25
+        form_score = max(0, form_score)
+
         return {
             "exercise": "Barbell Row",
             "state": self.state,
@@ -473,6 +533,7 @@ class BarbellRowTracker:
             "bad_reps": self.bad_reps,
             "half_reps": self.half_reps,
             "total_reps": total_reps,
+            "form_score": form_score,
             "feedback": self.current_feedback,
             "elbow_angle": round(elbow_angle, 1),
             "knee_angle": round(raw_knee_angle, 1),

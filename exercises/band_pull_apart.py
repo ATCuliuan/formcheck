@@ -10,37 +10,39 @@ from core.kinematics import calculate_angle
 # =====================================================================
 
 # 1. Setup Guard Parameters
-SETUP_MAX_WRIST_RATIO = 1.20        # Hands must start narrow (< 1.2x shoulder width)
-SETUP_MAX_WRIST_Y_DIFF = 0.08       # Maximum vertical height difference between wrists at setup
-SETUP_WRIST_HIP_MARGIN = 0.06       # Hands must stay comfortably above waistline
-SETUP_WRIST_SHOULDER_MARGIN = 0.16  # Hands must stay below shoulders at chest level
-SETUP_MIN_READY_FRAMES = 6          # Frames held in setup to transition to READY
-UNLOCK_RESET_FRAMES = 15            # Frames held steadily in setup to clear LOCKED_FAULT (~0.5s)
-BASELINE_EXPONENTIAL_ALPHA = 0.85   # Moving average weight for neck baseline
-BASELINE_NEW_SAMPLE_WEIGHT = 0.15   # Sample update weight for neck baseline
+SETUP_MIN_SHOULDER_SPAN_RATIO = 0.100 # Must face camera directly (shoulder X-span / torso height >= 0.55; side view < 0.55 flags fault)
+SETUP_MAX_WRIST_RATIO = 1.20         # Hands must start narrow (< 1.2x shoulder width)
+SETUP_MAX_WRIST_Y_DIFF = 0.08        # Maximum vertical height difference between wrists at setup
+SETUP_WRIST_HIP_MARGIN = 0.06        # Hands must stay comfortably above waistline
+SETUP_WRIST_SHOULDER_MARGIN = 0.16   # Hands must stay below shoulders at chest level
+SETUP_MIN_READY_FRAMES = 6           # Frames held in setup to transition to READY
+UNLOCK_RESET_FRAMES = 15             # Frames held steadily in setup to clear LOCKED_FAULT (~0.5s)
+BASELINE_EXPONENTIAL_ALPHA = 0.85    # Moving average weight for neck baseline
+BASELINE_NEW_SAMPLE_WEIGHT = 0.15    # Sample update weight for neck baseline
 
 # 2. Strict Kinematic & Form Thresholds
-MIN_ELBOW_ANGLE_THRESHOLD = 120.0   # Elbow angle threshold (below this = bent elbow cheat)
-SHRUG_NECK_DROP_RATIO = 0.85        # Neck ratio drop limit before flagging shrug
-ARM_HEIGHT_TOLERANCE = 0.20         # Strict vertical corridor around chest/shoulder height
-MAX_PULL_WRIST_Y_DIFF = 0.20        # Max vertical difference between hands during the pull (strict horizontal path)
-MIN_SHOULDER_WIDTH = 0.25           # Fallback minimum shoulder width in normalized units
-DEFAULT_TORSO_HEIGHT = 0.40         # Fallback torso height
+MIN_ELBOW_ANGLE_THRESHOLD = 130.0    # Elbow angle threshold (below this = bent elbow cheat)
+SHRUG_NECK_DROP_RATIO = 0.85         # Neck ratio drop limit before flagging shrug
+ARM_HEIGHT_TOLERANCE = 0.10       # Strict vertical corridor around chest/shoulder height
+MAX_PULL_WRIST_Y_DIFF = 0.10        # Max vertical difference between hands during the pull (strict horizontal path)
+MIN_SHOULDER_WIDTH = 0.25            # Fallback minimum shoulder width in normalized units
+DEFAULT_TORSO_HEIGHT = 0.40          # Fallback torso height
 
 # 3. Pull Depth & Range of Motion
-PULL_START_RATIO = 1.30             # Must expand past this to enter PULLING state
-FULL_ROM_PULL_RATIO = 1.70          # Must expand past this for rep completion credit
-RETURN_START_RATIO = 1.45           # Moving inward below this transitions to RETURNING
-EARLY_RETURN_DELTA = 0.15           # Inward drift allowed before full pull flags incomplete rep
+PULL_START_RATIO = 1.30              # Must expand past this to enter PULLING state
+FULL_ROM_PULL_RATIO = 1.70           # Must expand past this for rep completion credit
+RETURN_START_RATIO = 1.45            # Moving inward below this transitions to RETURNING
+EARLY_RETURN_DELTA = 0.15            # Inward drift allowed before full pull flags incomplete rep
 
 # 4. Debounce Frame Thresholds
-DEBOUNCE_ELBOW_BEND = 3             # Frames before flagging bent elbows
-DEBOUNCE_SHRUG = 3                  # Frames before flagging shrugging
-DEBOUNCE_HEIGHT_FAULT = 5           # Frames before flagging hands too high/low
-DEBOUNCE_TILT_FAULT = 5             # Frames before flagging uneven/tilted hands
+DEBOUNCE_PROFILE = 2                 # Fast trigger when rotating into side view (must stay front view)
+DEBOUNCE_ELBOW_BEND = 3              # Frames before flagging bent elbows
+DEBOUNCE_SHRUG = 3                   # Frames before flagging shrugging
+DEBOUNCE_HEIGHT_FAULT = 5            # Frames before flagging hands too high/low
+DEBOUNCE_TILT_FAULT = 5              # Frames before flagging uneven/tilted hands
 
 # 5. Model & Buffer Settings
-SEQUENCE_LENGTH = 30                # ST-GCN temporal buffer frame capacity
+SEQUENCE_LENGTH = 30                 # ST-GCN temporal buffer frame capacity
 
 # =====================================================================
 
@@ -54,7 +56,8 @@ class BandPullTracker:
         self.pull_reached = False
         self.max_wrist_dist = 0.0
 
-        # Tripwires
+        # Tripwires (FRONTAL VIEW)
+        self.is_front_view = True
         self.arms_straight = True
         self.shoulders_shrugged = False
         self.arm_height_valid = True
@@ -66,13 +69,14 @@ class BandPullTracker:
         self.unlock_frames = 0
 
         # Debounce counters
+        self.profile_frames = 0
         self.elbow_bend_frames = 0
         self.shrug_frames = 0
         self.height_fault_frames = 0
         self.tilt_fault_frames = 0
         self.baseline_neck_ratio = None
 
-        self.current_feedback = "Bring hands together in front of your chest"
+        self.current_feedback = "Face camera and bring hands together in front of your chest"
         self.mp_pose = mp.solutions.pose
 
         self.sequence_length = SEQUENCE_LENGTH
@@ -104,11 +108,13 @@ class BandPullTracker:
     def _reset_rep_tracking(self):
         self.pull_reached = False
         self.max_wrist_dist = 0.0
+        self.is_front_view = True
         self.arms_straight = True
         self.shoulders_shrugged = False
         self.arm_height_valid = True
         self.hands_horizontal = True
         self.ml_posture_maintained = True
+        self.profile_frames = 0
         self.elbow_bend_frames = 0
         self.shrug_frames = 0
         self.height_fault_frames = 0
@@ -133,7 +139,8 @@ class BandPullTracker:
         min_elbow_angle = min(l_elbow_angle, r_elbow_angle)
 
         wrist_distance = abs(l_wrist.x - r_wrist.x)
-        shoulder_width = max(abs(l_shoulder.x - r_shoulder.x), MIN_SHOULDER_WIDTH)
+        raw_shoulder_span = abs(l_shoulder.x - r_shoulder.x)
+        shoulder_width = max(raw_shoulder_span, MIN_SHOULDER_WIDTH)
 
         avg_shoulder_y = (l_shoulder.y + r_shoulder.y) / 2.0
         avg_hip_y = (l_hip.y + r_hip.y) / 2.0
@@ -147,19 +154,28 @@ class BandPullTracker:
         ear_shoulder_dist = (abs(l_ear.y - l_shoulder.y) + abs(r_ear.y - r_shoulder.y)) / 2.0
         neck_ratio = ear_shoulder_dist / torso_height
 
+        # Strict Front View Check (rejects side-view posture)
+        is_front = (raw_shoulder_span / torso_height) >= SETUP_MIN_SHOULDER_SPAN_RATIO
+
         # ---------------------------------------------------------
         # 1. SETUP GUARD
         # ---------------------------------------------------------
         hands_inside_body = wrist_distance < (shoulder_width * SETUP_MAX_WRIST_RATIO)
         hands_aligned = abs(l_wrist.y - r_wrist.y) < SETUP_MAX_WRIST_Y_DIFF
-        hands_at_chest_level = (avg_wrist_y < (avg_hip_y - SETUP_WRIST_HIP_MARGIN)) and (avg_wrist_y > (avg_shoulder_y - SETUP_WRIST_SHOULDER_MARGIN))
+        hands_at_chest_level = (
+            (avg_wrist_y < (avg_hip_y - SETUP_WRIST_HIP_MARGIN))
+            and (avg_wrist_y > (avg_shoulder_y - SETUP_WRIST_SHOULDER_MARGIN))
+        )
 
-        if hands_inside_body and hands_aligned and hands_at_chest_level:
+        if is_front and hands_inside_body and hands_aligned and hands_at_chest_level:
             self.ready_frames += 1
             if self.baseline_neck_ratio is None:
                 self.baseline_neck_ratio = neck_ratio
             elif self.ready_frames < 10:
-                self.baseline_neck_ratio = BASELINE_EXPONENTIAL_ALPHA * self.baseline_neck_ratio + BASELINE_NEW_SAMPLE_WEIGHT * neck_ratio
+                self.baseline_neck_ratio = (
+                    BASELINE_EXPONENTIAL_ALPHA * self.baseline_neck_ratio
+                    + BASELINE_NEW_SAMPLE_WEIGHT * neck_ratio
+                )
         else:
             self.ready_frames = max(0, self.ready_frames - 1)
 
@@ -171,11 +187,16 @@ class BandPullTracker:
         if not self.is_ready and self.state != "LOCKED_FAULT":
             self.state = "WAITING"
             self.frame_buffer.clear()
+            feedback_msg = (
+                "Face the camera directly (front view)"
+                if not is_front
+                else "Hold hands together in front of your chest"
+            )
             return {
                 "exercise": "Band Pull Apart", "state": self.state,
                 "good_reps": self.good_reps, "bad_reps": self.bad_reps,
                 "half_reps": self.half_reps, "total_reps": total_reps,
-                "form_score": 0, "feedback": "Hold hands together in front of your chest",
+                "form_score": 0, "feedback": feedback_msg,
                 "knee_angle": round(min_elbow_angle, 1), "hip_angle": 0.0
             }
 
@@ -201,6 +222,14 @@ class BandPullTracker:
         # 3. KINEMATIC TRIPWIRES
         # ---------------------------------------------------------
         if self.state in ["PULLING", "TOP", "RETURNING"]:
+            # 0. Strict Front View Check (Flags side view rotation as bad rep)
+            if not is_front:
+                self.profile_frames += 1
+                if self.profile_frames >= DEBOUNCE_PROFILE:
+                    self.is_front_view = False
+            else:
+                self.profile_frames = max(0, self.profile_frames - 1)
+
             # A. Elbow Bend Check
             if min_elbow_angle < MIN_ELBOW_ANGLE_THRESHOLD:
                 self.elbow_bend_frames += 1
@@ -247,7 +276,7 @@ class BandPullTracker:
         # 4. STATE MACHINE (WITH LOCKED_FAULT FREEZE)
         # ---------------------------------------------------------
         if self.state == "LOCKED_FAULT":
-            if hands_inside_body and hands_aligned and hands_at_chest_level:
+            if is_front and hands_inside_body and hands_aligned and hands_at_chest_level:
                 self.unlock_frames += 1
                 if self.unlock_frames >= UNLOCK_RESET_FRAMES:
                     self.state = "RESTING"
@@ -306,7 +335,10 @@ class BandPullTracker:
         if self.state in ["RETURNING", "TOP"] and hands_inside_body and hands_aligned:
             is_bad_rep = False
 
-            if not self.arm_height_valid:
+            if not self.is_front_view:
+                self.current_feedback = "Bad rep: Face the camera directly! Do not turn sideways. Return to start to reset."
+                is_bad_rep = True
+            elif not self.arm_height_valid:
                 self.current_feedback = "Bad rep: Keep arms level with chest! Bring hands to start to reset."
                 is_bad_rep = True
             elif not self.hands_horizontal:
@@ -338,6 +370,7 @@ class BandPullTracker:
 
         # Score Calculation
         form_score = 100
+        if not self.is_front_view: form_score -= 35
         if not self.arm_height_valid: form_score -= 25
         if not self.hands_horizontal: form_score -= 20
         if not self.pull_reached: form_score -= 25
