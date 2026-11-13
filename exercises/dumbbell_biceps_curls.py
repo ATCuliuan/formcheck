@@ -11,6 +11,7 @@ from core.kinematics import calculate_angle
 
 # 1. Setup & Starting Guard
 SETUP_ELBOW_MIN_ANGLE = 130.0       # Arm must hang extended down (> 130°)
+SETUP_MAX_SHOULDER_SPAN_RATIO = 0.20 # Side profile ratio limit (shoulder X-span / torso height)
 SETUP_MIN_READY_FRAMES = 6          # Consecutive frames hanging arm to become READY
 UNLOCK_RESET_FRAMES = 15            # Consecutive frames with arm hanging to clear LOCKED_FAULT (~0.5s)
 BASELINE_EXPONENTIAL_ALPHA = 0.85   # Weight for baseline exponential moving average
@@ -34,6 +35,7 @@ EARLY_REVERSAL_DELTA = 5.0          # Upward bounce in degrees while curling to 
 REP_COMPLETE_ELBOW_ANGLE = 130.0    # Arm extension angle required to evaluate rep completion
 
 # 4. Debounce Frame Thresholds (Higher = Slower/More Deliberate detection)
+DEBOUNCE_PROFILE = 2                # Frames before flagging loss of side view
 DEBOUNCE_ELBOW_ELEVATION = 3        # Frames before flagging elbow forward swing/lift
 DEBOUNCE_SHRUG = 3                  # Frames before flagging shoulder shrugging
 DEBOUNCE_TORSO = 5                  # Frames before flagging torso lean-back / heave
@@ -58,6 +60,7 @@ class DumbbellBicepsCurlsTracker:
         self.min_elbow_angle = 180.0
 
         # Upper-Body Strict Tripwires (SIDE / SAGITTAL VIEW)
+        self.is_side_view = True
         self.elbow_stayed_down = True
         self.shoulder_not_shrugged = True
         self.torso_stable = True
@@ -72,6 +75,7 @@ class DumbbellBicepsCurlsTracker:
         self.baseline_knee_angle = None
 
         # Debounce counters
+        self.profile_frames = 0
         self.elevation_frames = 0
         self.shrug_frames = 0
         self.torso_frames = 0
@@ -116,6 +120,7 @@ class DumbbellBicepsCurlsTracker:
         self.min_elbow_angle = 180.0
         self.prev_elbow_angle = None
 
+        self.is_side_view = True
         self.elbow_stayed_down = True
         self.shoulder_not_shrugged = True
         self.torso_stable = True
@@ -123,6 +128,7 @@ class DumbbellBicepsCurlsTracker:
         self.knee_bounce_warning = False
         self.fast_descent_warning = False
 
+        self.profile_frames = 0
         self.elevation_frames = 0
         self.shrug_frames = 0
         self.torso_frames = 0
@@ -187,10 +193,15 @@ class DumbbellBicepsCurlsTracker:
         ear_shoulder_dist = abs(active_shoulder.y - active_ear.y)
         shoulder_hip_dist = abs(active_hip.y - active_shoulder.y)
 
+        # Side profile verification (shoulder horizontal span vs torso vertical height)
+        shoulder_span_x = abs(l_shoulder.x - r_shoulder.x)
+        torso_height = shoulder_hip_dist if shoulder_hip_dist > 0 else 0.40
+        is_side = (shoulder_span_x / torso_height) < SETUP_MAX_SHOULDER_SPAN_RATIO
+
         # ---------------------------------------------------------
         # 1. SETUP GUARD
         # ---------------------------------------------------------
-        arm_extended = elbow_angle > SETUP_ELBOW_MIN_ANGLE
+        arm_extended = (elbow_angle > SETUP_ELBOW_MIN_ANGLE) and is_side
 
         if arm_extended:
             self.extended_frames += 1
@@ -214,6 +225,7 @@ class DumbbellBicepsCurlsTracker:
         if not self.is_ready and self.state not in ["EXTENDED", "CURLING", "TOP", "LOWERING", "LOCKED_FAULT"]:
             self.state = "WAITING"
             self.frame_buffer.clear()
+            feedback_msg = "Turn sideways to camera (side view)" if not is_side else "Let arm hang down to start"
             return {
                 "exercise": "Dumbbell Biceps Curls",
                 "state": self.state,
@@ -222,7 +234,7 @@ class DumbbellBicepsCurlsTracker:
                 "half_reps": self.half_reps,
                 "total_reps": total_reps,
                 "form_score": 0,
-                "feedback": "Let arm hang down to start",
+                "feedback": feedback_msg,
                 "elbow_angle": round(elbow_angle, 1)
             }
 
@@ -236,6 +248,14 @@ class DumbbellBicepsCurlsTracker:
         # 3. KINEMATIC TRIPWIRES
         # ---------------------------------------------------------
         if self.state in ["CURLING", "TOP", "LOWERING"]:
+            # 0. Strict Side View Profile Check
+            if not is_side:
+                self.profile_frames += 1
+                if self.profile_frames >= DEBOUNCE_PROFILE:
+                    self.is_side_view = False
+            else:
+                self.profile_frames = max(0, self.profile_frames - 1)
+
             # A. Shoulder-to-Elbow Elevation & Forward Upper Arm Swing
             vertical_drop_ratio = (active_elbow.y - active_shoulder.y) / upper_arm_len
             is_elevating = (upper_arm_angle > MAX_UPPER_ARM_ANGLE) or (vertical_drop_ratio < MIN_VERTICAL_DROP_RATIO)
@@ -355,8 +375,11 @@ class DumbbellBicepsCurlsTracker:
         if self.state in ["LOWERING", "TOP", "CURLING"] and self.rep_started and elbow_angle >= REP_COMPLETE_ELBOW_ANGLE:
             is_bad_rep = False
 
-            # Strict Form Tripwires (Form faults first)
-            if not self.elbow_stayed_down:
+            # Strict Form Tripwires (Side view & Form faults first)
+            if not self.is_side_view:
+                self.current_feedback = "Bad rep: Stay in side view! Stand sideways and let arm hang to reset."
+                is_bad_rep = True
+            elif not self.elbow_stayed_down:
                 self.current_feedback = "Bad rep: Keep elbows pinned down! Return arm down to reset."
                 is_bad_rep = True
             elif not self.shoulder_not_shrugged:
@@ -408,11 +431,12 @@ class DumbbellBicepsCurlsTracker:
 
         # Dynamic Scoring
         form_score = max(0, min(100, int(((150 - elbow_angle) / 80) * 100)))
+        if not self.is_side_view: form_score -= 35
         if not self.elbow_stayed_down: form_score -= 30
         if not self.shoulder_not_shrugged: form_score -= 20
         if not self.torso_stable: form_score -= 20
         if self.knee_bounce_warning: form_score -= 10
-        if self.fast_descent_warning: form_score -= 8
+        if not self.fast_descent_warning: form_score -= 8
         if not self.peak_contraction_reached and self.rep_started: form_score -= 20
         form_score = max(0, form_score)
 
