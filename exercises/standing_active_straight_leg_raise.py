@@ -6,48 +6,50 @@ import mediapipe as mp
 from core.kinematics import calculate_angle
 
 # =====================================================================
-# TRACKER TUNING CONFIGURATION (LEG RAISE - SAGITTAL VIEW)
+# TRACKER TUNING CONFIGURATION (STANDING STRAIGHT LEG RAISE - SIDE VIEW)
 # =====================================================================
 
-# 1. Setup & Starting Guard
-SETUP_HIP_MIN_ANGLE = 162.0          # Both hips fully extended standing tall
-SETUP_KNEE_MIN_ANGLE = 155.0         # Both knees locked
-SETUP_MAX_SHOULDER_SPAN_RATIO = 0.40 # Side profile ratio
-SETUP_MIN_READY_FRAMES = 8           # Consecutive frames standing upright
-UNLOCK_RESET_FRAMES = 15             # Frames held standing tall to clear LOCKED_FAULT (~0.5s)
-MIN_VISIBILITY_THRESHOLD = 2.0       # Minimum keypoint visibility
+# 1. Setup & Starting Guard (Step 1 & 2: Stand Tall, Strict Side View, Soft Standing Knee)
+SETUP_MAX_SHOULDER_SPAN_RATIO = 0.28 # Strict side profile (16:9 webcam calibrated)
+SETUP_MAX_HIP_SPAN_RATIO = 0.22      # Hips aligned sideways to camera
+SETUP_HIP_MIN_ANGLE = 156.0          # Standing tall at start (allows toe pointed out ready to lift)
+SETUP_KNEE_MIN_ANGLE = 148.0         # Step 1: Allows slight soft bend in standing knee
+SETUP_MIN_READY_FRAMES = 8           # Consecutive frames standing upright[cite: 16]
+UNLOCK_RESET_FRAMES = 12             # Frames held standing tall to clear LOCKED_FAULT
+MIN_VISIBILITY_THRESHOLD = 2.0       # Minimum keypoint visibility[cite: 16]
 
-# 2. Kinematic & Form Thresholds (Tuned for strict back & leg swing detection)
-MAX_BACKWARD_SWING_RATIO = 0.025     # Max backward drift behind support leg / torso height
-MAX_TORSO_BACKWARD_LEAN_ANGLE = 15.0 # Max degrees spine can lean backward past vertical
-MIN_LIFT_KNEE_ANGLE = 150.0          # Bending lifting leg (hamstring cheat)
-MIN_SUPPORT_KNEE_ANGLE = 152.0       # Buckling standing leg
-ECCENTRIC_DROP_SPEED_MAX = 24.0      # Free-falling leg cutoff (deg/frame)
-EARLY_REVERSAL_DELTA = 8.0           # Early downward drop before hip level
+# 2. Kinematic & Form Thresholds (Step 1, 2, 3, 4, 6)
+MAX_BACKWARD_SWING_RATIO = 0.12      # Catches swinging leg backward behind support ankle for momentum
+MAX_TORSO_LEAN_DELTA = 14.0          # Step 4: Max degrees upper body can lean backward/forward from baseline
+MIN_LIFT_KNEE_ANGLE = 150.0          # Step 3: Working leg must stay locked out straight (no knee bend)[cite: 16]
+MIN_SUPPORT_KNEE_ANGLE = 140.0       # Step 1: Allows soft bend in standing knee, catches deep knee buckling
+ECCENTRIC_DROP_SPEED_MAX = 22.0      # Step 6: Lower over a controlled 2-second count (no heavy dropping)
+EARLY_REVERSAL_DELTA = 8.0           # Early downward drop before reaching target height[cite: 16]
 
-# 3. Raise Height & Range of Motion
-FULL_RAISE_MAX_HIP_ANGLE = 110.0     # Foot reached hip/waist level (hip <= 110°)
-HALF_RAISE_MAX_HIP_ANGLE = 135.0     # Shallow range flagged strictly as bad rep
-LIFTING_START_HIP_ANGLE = 155.0      # Raising leg initiates LIFTING
-LOWERING_START_HIP_ANGLE = 118.0     # Lowering leg initiates LOWERING
-REP_COMPLETE_HIP_ANGLE = 165.0       # Return to bottom evaluates completion
+# 3. Raise Height & Range of Motion (Step 4, 5, 6)
+LIFTING_START_HIP_ANGLE = 150.0      # Raising leg in front initiates LIFTING
+MIN_VALID_REP_FLEXION_ANGLE = 142.0  # Ignore minor standing posture shifts (> 142°)
+HALF_RAISE_MAX_HIP_ANGLE = 135.0     # Lifting past 135° without reaching full height flags Half Rep (Bad Rep)[cite: 16]
+FULL_RAISE_MAX_HIP_ANGLE = 112.0     # Step 4 & 5: Leg raised high in front to hip/waist level (<= 112°)
+LOWERING_START_HIP_ANGLE = 120.0     # Step 6: Lowering leg down from peak
+REP_COMPLETE_HIP_ANGLE = 155.0       # Step 6: Touching toe lightly to floor completes the rep
 
 # 4. Debounce Frame Thresholds
-DEBOUNCE_PROFILE = 4
-DEBOUNCE_SWING = 2                   # Fast 2-frame trigger for pendulum kicks
-DEBOUNCE_TORSO = 2                   # Fast 2-frame trigger for backward spine sway
-DEBOUNCE_LIFT_KNEE = 4
-DEBOUNCE_SUPPORT_KNEE = 4
-DEBOUNCE_DROP = 2
-DEBOUNCE_HALF_REP = 3
-DEBOUNCE_ML_FAULT = 5
+DEBOUNCE_PROFILE = 3                 # Frames before flagging lost side view
+DEBOUNCE_SWING = 3                   # Frames before flagging backward pendulum swing
+DEBOUNCE_TORSO = 3                   # Frames before flagging backward torso lean
+DEBOUNCE_LIFT_KNEE = 3               # Frames before flagging bent working knee
+DEBOUNCE_SUPPORT_KNEE = 4            # Frames before flagging buckled support knee[cite: 16]
+DEBOUNCE_DROP = 2                    # Frames before flagging uncontrolled leg drop[cite: 16]
+DEBOUNCE_HALF_REP = 3                # Frames before confirming early reversal[cite: 16]
+DEBOUNCE_ML_FAULT = 5                #[cite: 16]
 
 # 5. Machine Learning Sensitivity
-ML_FAULT_CONFIDENCE_THRESHOLD = 0.75
+ML_FAULT_CONFIDENCE_THRESHOLD = 0.75 #[cite: 16]
 
 # 6. Model & Buffer Settings
-SEQUENCE_LENGTH = 30
-POST_REP_FEEDBACK_FRAMES = 40
+SEQUENCE_LENGTH = 30                 #[cite: 16]
+POST_REP_FEEDBACK_FRAMES = 40        #[cite: 16]
 
 # =====================================================================
 
@@ -57,21 +59,22 @@ class StandingActiveStraightLegRaiseTracker:
         self.state = "WAITING"
         self.good_reps = 0
         self.bad_reps = 0
-        self.half_reps = 0                 # Kept at 0 for API compatibility
+        self.half_reps = 0                 # Kept at 0 for API compatibility[cite: 16]
 
         self.rep_started = False
         self.target_height_reached = False
         self.was_half_rep = False
         self.min_hip_angle = 180.0
+        self.locked_active_leg = None      # Locks 'LEFT' or 'RIGHT' working leg during the rep
 
-        # Posture Tripwires (SIDE / SAGITTAL VIEW)
+        # Posture Tripwires (STRICT SIDE / SAGITTAL VIEW)
         self.is_side_view = True
-        self.leg_swung_backward = False
-        self.lifted_knee_straight = True
-        self.support_knee_straight = True
-        self.torso_upright = True
-        self.controlled_descent = True
-        self.ml_posture_maintained = True
+        self.leg_swung_backward = False    # Catches pendulum momentum swing behind support leg[cite: 16]
+        self.lifted_knee_straight = True   # Step 3: Lock working knee out completely[cite: 16]
+        self.support_knee_straight = True  # Step 1: Soft bend allowed, no buckling[cite: 16]
+        self.torso_upright = True          # Step 2 & 4: Chest tall, do not lean backward[cite: 16]
+        self.controlled_descent = True     # Step 6: Controlled 2-second lowering[cite: 16]
+        self.ml_posture_maintained = True  #[cite: 16]
 
         # Debounce counters
         self.facing_camera_frames = 0
@@ -89,13 +92,13 @@ class StandingActiveStraightLegRaiseTracker:
 
         self.baseline_torso_angle = None
         self.prev_hip_angle = None
-        self.current_feedback = "Stand sideways to the camera to begin"
+        self.current_feedback = "Stand sideways to the camera: chest tall, hands on hips"
         self.mp_pose = mp.solutions.pose
 
         self.sequence_length = SEQUENCE_LENGTH
         self.frame_buffer = deque(maxlen=self.sequence_length)
 
-        # Load TFLite model
+        # Load TFLite model[cite: 16]
         self.interpreter = None
         model_path = os.path.join("models", "tflite", "st_gcn_standing_active_straight_leg_raise.tflite")
         if os.path.exists(model_path):
@@ -122,6 +125,7 @@ class StandingActiveStraightLegRaiseTracker:
         self.target_height_reached = False
         self.was_half_rep = False
         self.min_hip_angle = 180.0
+        self.locked_active_leg = None
         self.reversal_frames = 0
         self.prev_hip_angle = None
 
@@ -144,8 +148,6 @@ class StandingActiveStraightLegRaiseTracker:
         self.frame_buffer.clear()
 
     def process_frame(self, landmarks):
-        l_ear = landmarks[self.mp_pose.PoseLandmark.LEFT_EAR.value]
-        r_ear = landmarks[self.mp_pose.PoseLandmark.RIGHT_EAR.value]
         l_shoulder = landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER.value]
         r_shoulder = landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER.value]
         l_hip = landmarks[self.mp_pose.PoseLandmark.LEFT_HIP.value]
@@ -159,7 +161,7 @@ class StandingActiveStraightLegRaiseTracker:
 
         l_vis = sum([l_shoulder.visibility, l_hip.visibility, l_knee.visibility, l_ankle.visibility])
         r_vis = sum([r_shoulder.visibility, r_hip.visibility, r_knee.visibility, r_ankle.visibility])
-        total_reps = self.good_reps + self.bad_reps
+        total_reps = self.good_reps + self.bad_reps + self.half_reps
 
         if self.post_rep_timer > 0:
             self.post_rep_timer -= 1
@@ -174,13 +176,13 @@ class StandingActiveStraightLegRaiseTracker:
                 "hip_angle": 0.0, "knee_angle": 0.0, "depth_reached": False
             }
 
-        active_ear = r_ear if r_vis > l_vis else l_ear
+        # 1. Strict Side Profile Verification (16:9 Webcam Calibrated)
+        torso_height = abs(((l_shoulder.y + r_shoulder.y) / 2.0) - ((l_hip.y + r_hip.y) / 2.0)) or 0.42
         shoulder_span_x = abs(l_shoulder.x - r_shoulder.x)
         hip_span_x = abs(l_hip.x - r_hip.x)
-        torso_height = abs(((l_shoulder.y + r_shoulder.y) / 2.0) - ((l_hip.y + r_hip.y) / 2.0)) or 0.45
-
         shoulder_aspect = shoulder_span_x / torso_height
-        is_turned_sideways = shoulder_aspect < SETUP_MAX_SHOULDER_SPAN_RATIO and hip_span_x < 0.15
+        hip_aspect = hip_span_x / torso_height
+        is_turned_sideways = (shoulder_aspect < SETUP_MAX_SHOULDER_SPAN_RATIO) and (hip_aspect < SETUP_MAX_HIP_SPAN_RATIO)
 
         facing_right = (l_toe.x > l_ankle.x) if l_vis > r_vis else (r_toe.x > r_ankle.x)
 
@@ -189,44 +191,50 @@ class StandingActiveStraightLegRaiseTracker:
         l_knee_angle = calculate_angle(l_hip, l_knee, l_ankle)
         r_knee_angle = calculate_angle(r_hip, r_knee, r_ankle)
 
-        # Active lifting leg isolation
-        if l_hip_angle < r_hip_angle - 8:
+        # 2. Locked Working Leg Selection (Prevents mid-rep leg swapping)
+        if self.rep_started and self.locked_active_leg is not None:
+            use_left_active = (self.locked_active_leg == "LEFT")
+        else:
+            if l_hip_angle < r_hip_angle - 6.0:
+                use_left_active = True
+            elif r_hip_angle < l_hip_angle - 6.0:
+                use_left_active = False
+            else:
+                use_left_active = (l_hip_angle <= r_hip_angle)
+
+        if use_left_active:
             active_hip_angle = l_hip_angle
             active_knee_angle = l_knee_angle
             support_knee_angle = r_knee_angle
             active_ankle, support_ankle = l_ankle, r_ankle
             active_knee_pt, support_knee_pt = l_knee, r_knee
             active_shoulder, active_hip = l_shoulder, l_hip
-        elif r_hip_angle < l_hip_angle - 8:
+            support_leg_vis = (r_knee.visibility > 0.45 and r_ankle.visibility > 0.45)
+        else:
             active_hip_angle = r_hip_angle
             active_knee_angle = r_knee_angle
             support_knee_angle = l_knee_angle
             active_ankle, support_ankle = r_ankle, l_ankle
             active_knee_pt, support_knee_pt = r_knee, l_knee
             active_shoulder, active_hip = r_shoulder, r_hip
-        else:
-            active_hip_angle = min(l_hip_angle, r_hip_angle)
-            active_knee_angle = l_knee_angle if l_hip_angle < r_hip_angle else r_knee_angle
-            support_knee_angle = r_knee_angle if l_hip_angle < r_hip_angle else l_knee_angle
-            active_ankle = l_ankle if l_hip_angle < r_hip_angle else r_ankle
-            support_ankle = r_ankle if l_hip_angle < r_hip_angle else l_ankle
-            active_knee_pt = l_knee if l_hip_angle < r_hip_angle else r_knee
-            support_knee_pt = r_knee if l_hip_angle < r_hip_angle else l_knee
-            active_shoulder = l_shoulder if l_hip_angle < r_hip_angle else r_shoulder
-            active_hip = l_hip if l_hip_angle < r_hip_angle else r_hip
+            support_leg_vis = (l_knee.visibility > 0.45 and l_ankle.visibility > 0.45)
 
-        # Torso inclination relative to vertical
-        dx_spine = active_shoulder.x - active_hip.x
-        dy_spine = max(abs(active_shoulder.y - active_hip.y), 0.1)
+        # 3. Torso Inclination Relative to Vertical[cite: 16]
+        primary_shoulder = r_shoulder if r_vis >= l_vis else l_shoulder
+        primary_hip = r_hip if r_vis >= l_vis else l_hip
+        dx_spine = primary_shoulder.x - primary_hip.x
+        dy_spine = max(abs(primary_shoulder.y - primary_hip.y), 0.10)
         spine_tilt_deg = np.degrees(np.arctan2(dx_spine, dy_spine))
 
         # ---------------------------------------------------------
-        # 1. SETUP GUARD
+        # 1. SETUP GUARD (Step 1 & 2: Stand Tall in Strict Side View)
         # ---------------------------------------------------------
         is_standing_tall = (
-            l_hip_angle > SETUP_HIP_MIN_ANGLE and r_hip_angle > SETUP_HIP_MIN_ANGLE
-            and l_knee_angle > SETUP_KNEE_MIN_ANGLE and r_knee_angle > SETUP_KNEE_MIN_ANGLE
-            and is_turned_sideways
+            is_turned_sideways
+            and (l_hip_angle > SETUP_HIP_MIN_ANGLE)
+            and (r_hip_angle > SETUP_HIP_MIN_ANGLE)
+            and (l_knee_angle > SETUP_KNEE_MIN_ANGLE)
+            and (r_knee_angle > SETUP_KNEE_MIN_ANGLE)
         )
 
         if is_standing_tall:
@@ -244,7 +252,10 @@ class StandingActiveStraightLegRaiseTracker:
         if not self.is_ready and self.state != "LOCKED_FAULT":
             self.state = "WAITING"
             self.frame_buffer.clear()
-            feedback_msg = "Turn sideways to camera" if not is_turned_sideways else "Stand tall sideways, legs locked to begin"
+            if not is_turned_sideways:
+                feedback_msg = "Turn sideways to camera (strict side view required)"
+            else:
+                feedback_msg = "Stand tall sideways with hands on hips to begin"
             return {
                 "exercise": "Standing Leg Raise", "state": self.state,
                 "good_reps": self.good_reps, "bad_reps": self.bad_reps,
@@ -275,6 +286,11 @@ class StandingActiveStraightLegRaiseTracker:
                 if bad_posture_prob >= ML_FAULT_CONFIDENCE_THRESHOLD and self.state not in ["STANDING", "WAITING", "LOCKED_FAULT"]:
                     self.ml_fault_frames += 1
                     if self.ml_fault_frames >= DEBOUNCE_ML_FAULT:
+                        if self.ml_posture_maintained:
+                            print(
+                                f"[STANDING LEG RAISE FAULT] AI ST-GCN flagged posture breakdown: prob={bad_posture_prob:.2f}",
+                                flush=True,
+                            )
                         self.ml_posture_maintained = False
                 else:
                     self.ml_fault_frames = max(0, self.ml_fault_frames - 1)
@@ -282,67 +298,93 @@ class StandingActiveStraightLegRaiseTracker:
                 pass
 
         # ---------------------------------------------------------
-        # 3. KINEMATIC FORM TRIPWIRES
+        # 3. KINEMATIC FORM TRIPWIRES (ACTIVE ACROSS LIFTING, PEAK, AND LOWERING)
         # ---------------------------------------------------------
-        if self.rep_started and self.state in ["LIFTING", "PEAK"]:
-            if shoulder_aspect > 0.48 or hip_span_x > 0.20:
+        if self.rep_started and self.state in ["LIFTING", "PEAK", "LOWERING"]:
+            self.min_hip_angle = min(self.min_hip_angle, active_hip_angle)
+
+            # A. Strict Side Profile Tripwire
+            if not is_turned_sideways:
                 self.facing_camera_frames += 1
                 if self.facing_camera_frames >= DEBOUNCE_PROFILE:
+                    if self.is_side_view:
+                        print(
+                            f"[STANDING LEG RAISE FAULT] Lost side view: shoulder_aspect={shoulder_aspect:.2f}, "
+                            f"hip_aspect={hip_aspect:.2f}",
+                            flush=True,
+                        )
                     self.is_side_view = False
             else:
                 self.facing_camera_frames = max(0, self.facing_camera_frames - 1)
 
-            # Strict Directional Backward Swing Tripwire:
-            # Measures if active ankle or knee drifts behind the support leg's vertical line
-            if facing_right:
-                ankle_backward_drift = support_ankle.x - active_ankle.x
-                knee_backward_drift = support_knee_pt.x - active_knee_pt.x
-            else:
-                ankle_backward_drift = active_ankle.x - support_ankle.x
-                knee_backward_drift = active_knee_pt.x - support_knee_pt.x
+            # B. Directional Backward Pendulum Swing Tripwire (Only when support leg is visible)
+            if support_leg_vis:
+                if facing_right:
+                    ankle_backward_drift = support_ankle.x - active_ankle.x
+                    knee_backward_drift = support_knee_pt.x - active_knee_pt.x
+                else:
+                    ankle_backward_drift = active_ankle.x - support_ankle.x
+                    knee_backward_drift = active_knee_pt.x - support_knee_pt.x
 
-            is_swinging_back = (
-                (ankle_backward_drift > MAX_BACKWARD_SWING_RATIO * torso_height)
-                or (knee_backward_drift > MAX_BACKWARD_SWING_RATIO * torso_height)
-            )
+                is_swinging_back = (
+                    (ankle_backward_drift > MAX_BACKWARD_SWING_RATIO * torso_height)
+                    or (knee_backward_drift > MAX_BACKWARD_SWING_RATIO * torso_height)
+                )
+                if is_swinging_back:
+                    self.backward_swing_frames += 1
+                    if self.backward_swing_frames >= DEBOUNCE_SWING:
+                        if not self.leg_swung_backward:
+                            print(
+                                f"[STANDING LEG RAISE FAULT] Leg swung backward behind support leg: "
+                                f"drift={ankle_backward_drift:.2f}",
+                                flush=True,
+                            )
+                        self.leg_swung_backward = True
+                else:
+                    self.backward_swing_frames = max(0, self.backward_swing_frames - 1)
 
-            if is_swinging_back:
-                self.backward_swing_frames += 1
-                if self.backward_swing_frames >= DEBOUNCE_SWING:
-                    self.leg_swung_backward = True
-            else:
-                self.backward_swing_frames = max(0, self.backward_swing_frames - 1)
-
-            # Strict Backward Torso Lean Check:
-            # Detects shoulders pitching backward behind hips relative to facing direction
+            # C. Step 2 & 4: Upright Torso Check (Catches leaning backward to heave leg up)
             if self.baseline_torso_angle is not None:
-                # If facing right, backward lean shifts shoulder x leftward (negative delta)
-                # If facing left, backward lean shifts shoulder x rightward (positive delta)
-                spine_delta = spine_tilt_deg - self.baseline_torso_angle
-                backward_lean_degrees = -spine_delta if facing_right else spine_delta
-
-                if backward_lean_degrees > MAX_TORSO_BACKWARD_LEAN_ANGLE:
+                spine_delta = abs(spine_tilt_deg - self.baseline_torso_angle)
+                if spine_delta > MAX_TORSO_LEAN_DELTA:
                     self.torso_frames += 1
                     if self.torso_frames >= DEBOUNCE_TORSO:
+                        if self.torso_upright:
+                            print(
+                                f"[STANDING LEG RAISE FAULT] Upper body leaned backward/forward: "
+                                f"delta={spine_delta:.1f}° (max={MAX_TORSO_LEAN_DELTA}°)",
+                                flush=True,
+                            )
                         self.torso_upright = False
                 else:
                     self.torso_frames = max(0, self.torso_frames - 1)
 
+            # D. Step 3: Working Leg Locked Straight (No bend in moving knee)
             if active_knee_angle < MIN_LIFT_KNEE_ANGLE:
                 self.lift_knee_frames += 1
                 if self.lift_knee_frames >= DEBOUNCE_LIFT_KNEE:
+                    if self.lifted_knee_straight:
+                        print(
+                            f"[STANDING LEG RAISE FAULT] Working knee bent: angle={active_knee_angle:.1f}° "
+                            f"(min={MIN_LIFT_KNEE_ANGLE}°)",
+                            flush=True,
+                        )
                     self.lifted_knee_straight = False
             else:
                 self.lift_knee_frames = max(0, self.lift_knee_frames - 1)
 
-            if support_knee_angle < MIN_SUPPORT_KNEE_ANGLE:
+            # E. Step 1: Standing Leg Stability (Soft bend allowed, catches deep knee buckling)
+            if support_leg_vis and support_knee_angle < MIN_SUPPORT_KNEE_ANGLE:
                 self.support_knee_frames += 1
                 if self.support_knee_frames >= DEBOUNCE_SUPPORT_KNEE:
+                    if self.support_knee_straight:
+                        print(
+                            f"[STANDING LEG RAISE FAULT] Standing leg buckled: support_knee={support_knee_angle:.1f}°",
+                            flush=True,
+                        )
                     self.support_knee_straight = False
             else:
                 self.support_knee_frames = max(0, self.support_knee_frames - 1)
-
-            self.min_hip_angle = min(self.min_hip_angle, active_hip_angle)
 
         # ---------------------------------------------------------
         # 4. STATE MACHINE (WITH LOCKED_FAULT FREEZE)
@@ -354,7 +396,7 @@ class StandingActiveStraightLegRaiseTracker:
                     self.state = "STANDING"
                     self.unlock_frames = 0
                     self._reset_rep_tracking()
-                    self.current_feedback = "Reset complete! Lift leg straight out in front without swinging."
+                    self.current_feedback = "Reset complete! Lock working quad and lift leg straight out in front."
             else:
                 self.unlock_frames = 0
 
@@ -370,46 +412,62 @@ class StandingActiveStraightLegRaiseTracker:
         if self.state == "WAITING" and self.is_ready:
             self.state = "STANDING"
             if self.post_rep_timer == 0:
-                self.current_feedback = "Raise leg straight out in front!"
+                self.current_feedback = "Lock working quad, flex foot, and raise leg straight out in front!"
 
-        elif self.state in ["STANDING", "LOWERING"] and active_hip_angle <= LIFTING_START_HIP_ANGLE:
+        # Step 4: Initiate Controlled Lift
+        elif self.state in ["STANDING", "LOWERING"] and min(l_hip_angle, r_hip_angle) <= LIFTING_START_HIP_ANGLE:
             self.state = "LIFTING"
             self.rep_started = True
+            self.locked_active_leg = "LEFT" if (l_hip_angle <= r_hip_angle) else "RIGHT"
             self.min_hip_angle = active_hip_angle
             self.reversal_frames = 0
             if self.post_rep_timer == 0:
-                self.current_feedback = "Keep both legs completely locked, spine upright..."
+                self.current_feedback = "Lift straight leg up without leaning your upper body back..."
 
-        # Full ROM: Foot reaches hip level (<= 110°)
+        # Step 5: Peak Reached & Squeeze (<= 112°)
         elif self.state == "LIFTING" and active_hip_angle <= FULL_RAISE_MAX_HIP_ANGLE:
             self.target_height_reached = True
             self.state = "PEAK"
+            self.reversal_frames = 0
             if self.post_rep_timer == 0:
-                self.current_feedback = "Great height! Lower slowly under control."
+                self.current_feedback = "Squeeze hip & quad at peak! Slowly lower over 2 seconds."
 
-        # Early downward reversal (Flagged as Bad Rep)
+        # Early downward reversal (Half Rep Branch -> Routed to Bad Rep)
         elif self.state == "LIFTING" and not self.target_height_reached and (active_hip_angle - self.min_hip_angle) > EARLY_REVERSAL_DELTA:
             self.reversal_frames += 1
             if self.reversal_frames >= DEBOUNCE_HALF_REP:
-                self.was_half_rep = True
+                if self.min_hip_angle <= HALF_RAISE_MAX_HIP_ANGLE:
+                    self.was_half_rep = True
                 self.state = "LOWERING"
                 self.current_feedback = "Incomplete raise! Lowering leg early..."
+                print(
+                    f"[STANDING LEG RAISE FAULT] Early reversal before hip level: min_hip={self.min_hip_angle:.1f}° "
+                    f"(required<={FULL_RAISE_MAX_HIP_ANGLE}°)",
+                    flush=True,
+                )
 
+        # Step 6: Lower Under Tension from Peak
         elif self.state == "PEAK" and active_hip_angle > LOWERING_START_HIP_ANGLE:
             self.state = "LOWERING"
             if self.post_rep_timer == 0:
-                self.current_feedback = "Control the descent"
+                self.current_feedback = "Lower leg slowly under tension (do not drop heavily)..."
 
         if self.state == "LIFTING" and not ((active_hip_angle - self.min_hip_angle) > EARLY_REVERSAL_DELTA):
             self.reversal_frames = max(0, self.reversal_frames - 1)
 
-        # Eccentric drop detector
+        # Step 6: Eccentric drop speed detector[cite: 16]
         if self.rep_started and self.state in ["LOWERING", "LIFTING"]:
             if self.prev_hip_angle is not None:
                 drop_speed = active_hip_angle - self.prev_hip_angle
                 if drop_speed > ECCENTRIC_DROP_SPEED_MAX:
                     self.drop_frames += 1
                     if self.drop_frames >= DEBOUNCE_DROP:
+                        if self.controlled_descent:
+                            print(
+                                f"[STANDING LEG RAISE FAULT] Leg dropped too fast: speed={drop_speed:.1f} deg/frame "
+                                f"(max={ECCENTRIC_DROP_SPEED_MAX})",
+                                flush=True,
+                            )
                         self.controlled_descent = False
                 else:
                     self.drop_frames = max(0, self.drop_frames - 1)
@@ -418,53 +476,77 @@ class StandingActiveStraightLegRaiseTracker:
             self.prev_hip_angle = None
 
         # ---------------------------------------------------------
-        # 5. REP COMPLETION & EVALUATION
+        # 5. REP COMPLETION & EVALUATION (HALF REPS FLAGGED AS BAD REPS)
         # ---------------------------------------------------------
-        if self.rep_started and active_hip_angle > REP_COMPLETE_HIP_ANGLE and self.state in ["LOWERING", "PEAK", "LIFTING"]:
+        if self.rep_started and active_hip_angle >= REP_COMPLETE_HIP_ANGLE and self.state in ["LOWERING", "PEAK", "LIFTING"]:
+            # Ignore minor standing shifts (> 142°)
+            if self.min_hip_angle > MIN_VALID_REP_FLEXION_ANGLE and self.is_side_view and self.lifted_knee_straight:
+                self._reset_rep_tracking()
+                self.state = "STANDING"
+                return {
+                    "exercise": "Standing Leg Raise", "state": self.state,
+                    "good_reps": self.good_reps, "bad_reps": self.bad_reps,
+                    "half_reps": self.half_reps, "total_reps": total_reps,
+                    "form_score": 100, "feedback": self.current_feedback,
+                    "hip_angle": round(active_hip_angle, 1), "knee_angle": round(active_knee_angle, 1),
+                    "depth_reached": False
+                }
+
             is_bad_rep = False
 
             if not self.is_side_view:
-                self.current_feedback = "Bad rep: Stand sideways! Do not face camera."
+                self.current_feedback = "Bad rep: Stand sideways to the camera! Do not face front."
                 is_bad_rep = True
             elif self.leg_swung_backward:
-                self.current_feedback = "Bad rep: Do not swing leg backward for momentum! Lift straight from standing."
+                self.current_feedback = "Bad rep: Do not swing leg backward for momentum! Lift straight from the front."
                 is_bad_rep = True
             elif not self.torso_upright:
-                self.current_feedback = "Bad rep: Do not lean backward to heave leg up! Keep spine upright."
+                self.current_feedback = "Bad rep: Do not lean your upper body backward! Keep chest tall."
                 is_bad_rep = True
             elif not self.lifted_knee_straight:
-                self.current_feedback = "Bad rep: Do not bend lifting knee! Lock it straight."
+                self.current_feedback = "Bad rep: Squeeze your quad to lock the moving knee completely straight!"
                 is_bad_rep = True
             elif not self.support_knee_straight:
-                self.current_feedback = "Bad rep: Standing leg must stay locked out."
+                self.current_feedback = "Bad rep: Keep your standing leg firm (only a slight soft bend)!"
                 is_bad_rep = True
             elif not self.controlled_descent:
-                self.current_feedback = "Bad rep: Control the negative! Lower leg slowly."
+                self.current_feedback = "Bad rep: Lower your leg slowly over a 2-second count! Do not drop it."
                 is_bad_rep = True
             elif not self.ml_posture_maintained:
-                self.current_feedback = "Bad rep: AI detected collapsed posture."
+                self.current_feedback = "Bad rep: AI detected posture or balance breakdown."
                 is_bad_rep = True
             elif self.was_half_rep or not self.target_height_reached:
                 if self.min_hip_angle <= HALF_RAISE_MAX_HIP_ANGLE:
-                    self.current_feedback = "Bad rep: Half rep! Lift foot all the way to hip level."
+                    self.current_feedback = "Bad rep: Half rep! Lift your straight leg all the way to hip level."
                 else:
                     self.current_feedback = "Bad rep: Leg raise was too shallow! Lift higher."
                 is_bad_rep = True
 
+            rep_num = self.good_reps + self.bad_reps + self.half_reps + 1
             if is_bad_rep:
                 self.bad_reps += 1
+                print(
+                    f"[STANDING LEG RAISE REP #{rep_num} -> BAD REP] "
+                    f"Reason: {self.current_feedback} | min_hip={self.min_hip_angle:.1f}°, knee={active_knee_angle:.1f}°",
+                    flush=True,
+                )
                 self.state = "LOCKED_FAULT"
                 self.unlock_frames = 0
                 self._reset_rep_tracking()
             else:
                 self.good_reps += 1
-                self.current_feedback = "Perfect straight leg raise!"
+                self.current_feedback = "Perfect Straight Leg Raise! Great quad lockout and controlled lowering."
+                print(
+                    f"[STANDING LEG RAISE REP #{rep_num} -> GOOD REP] "
+                    f"min_hip={self.min_hip_angle:.1f}°, knee={active_knee_angle:.1f}°",
+                    flush=True,
+                )
                 self.state = "STANDING"
                 self._reset_rep_tracking()
 
             self.post_rep_timer = POST_REP_FEEDBACK_FRAMES
 
-        # Dynamic Scoring
+        # Dynamic Scoring[cite: 16]
         form_score = max(0, min(100, int(100 - abs(active_hip_angle - 90) * 0.4))) if self.state != "STANDING" else 100
         if not self.is_side_view: form_score -= 35
         if self.leg_swung_backward: form_score -= 30
