@@ -6,51 +6,54 @@ import mediapipe as mp
 from core.kinematics import calculate_angle
 
 # =====================================================================
-# TRACKER TUNING CONFIGURATION (PLANK TRICEPS EXTENSION - SAGITTAL VIEW)
+# TRACKER TUNING CONFIGURATION (PLANK TRICEPS EXTENSION - SIDE VIEW)
 # =====================================================================
 
-# 1. Setup & Starting Guard
-SETUP_ELBOW_MIN_ANGLE = 150.0        # Straight arms in high plank
-SETUP_BODY_MIN_ANGLE = 150.0         # Rigid horizontal plank line
-SETUP_KNEE_MIN_ANGLE = 150.0         # Knees locked straight off floor
-SETUP_MIN_READY_FRAMES = 8           # Frames holding plank to confirm READY
-UNLOCK_RESET_FRAMES = 15             # Frames held in high plank to clear LOCKED_FAULT (~0.5s)
-MIN_VISIBILITY_THRESHOLD = 2.5       # Minimum keypoint visibility
+# 1. Setup & Starting Guard (Step 1 & 2: Forearm Plank, Elbows Under Shoulders, Rigid Line)
+SETUP_MAX_SHOULDER_SPAN_RATIO = 0.35 # Enforces strict side profile view
+SETUP_MAX_ELBOW_ANGLE = 118.0        # Forearms on floor, elbows bent ~90° at start
+SETUP_MIN_ELBOW_ANGLE = 60.0         # Prevents collapsing chest flat onto hands
+SETUP_MAX_UPPER_ARM_TILT_DEG = 32.0  # Elbows stacked directly under shoulders (Step 1)
+SETUP_MAX_FOREARM_SLOPE = 0.10       # Forearms resting flat on floor (elbow.y ~ wrist.y)
+SETUP_BODY_MIN_ANGLE = 152.0         # Rigid straight line from head/shoulders to heels (Step 2)
+SETUP_KNEE_MIN_ANGLE = 148.0         # Legs extended straight on toes (knees off floor)
+SETUP_MIN_READY_FRAMES = 6           # Consecutive frames in forearm plank to confirm READY
+UNLOCK_RESET_FRAMES = 12             # Frames held in forearm plank to clear LOCKED_FAULT
+MIN_VISIBILITY_THRESHOLD = 2.4       # Minimum side-profile landmark visibility sum[cite: 9]
 
-# 2. Kinematic & Form Thresholds
-MIN_KNEE_STRAIGHT_ANGLE = 145.0      # Bending knees / knee cheat
-MIN_CORE_SAG_BODY_ANGLE = 140.0      # Hips collapsing toward floor (banana back)
-MIN_CORE_PIKE_BODY_ANGLE = 140.0     # Butt peaking upward into an A-frame
-MIN_NECK_NEUTRAL_ANGLE = 95.0       # Chin poking forward
-MAX_WRIST_Y_DIFF = 0.08              # Vertical height gap allowed between hands on floor
-MAX_WRIST_X_STAGGER = 0.12           # Anterior/posterior horizontal stagger gap allowed between hands
-MAX_ARM_VERTICAL_DEVIATION_DEG = 35.0 # Strict degrees arm can deviate from vertical under shoulder
-ECCENTRIC_DROP_SPEED_MAX = 22.0      # Free-falling into floor cutoff (deg/frame)
-EARLY_ASCENT_DELTA = 8.0             # Early upward push before hitting 90°
+# 2. Kinematic & Form Thresholds (Step 2, 4, 5: Straight Body, Elbows Tucked, Controlled Lower)
+MIN_KNEE_STRAIGHT_ANGLE = 142.0      # Catches knees bending / touching floor
+MIN_CORE_SAG_BODY_ANGLE = 145.0      # Hips sagging below the shoulder-to-ankle line
+MIN_CORE_PIKE_BODY_ANGLE = 142.0     # Hips piking upward into an A-frame
+MIN_NECK_NEUTRAL_ANGLE = 100.0       # Keep neck neutral in line with spine
+MAX_ELBOW_FLARE_SPAN_RATIO = 0.34    # Step 4: Keep elbows tucked (prevents flaring elbows out wide)
+ECCENTRIC_DROP_SPEED_MAX = 24.0      # Step 5: Lower with control (max deg/frame drop speed)
 
-# 3. Depth & Range of Motion
-FULL_DEPTH_MAX_ELBOW_ANGLE = 90.0    # Bottom depth level (elbows <= 90°)
-DESCENDING_START_ELBOW_ANGLE = 135.0 # Initiating descent
-ASCENDING_START_ELBOW_ANGLE = 100.0  # Pushing up from bottom
-REP_COMPLETE_ELBOW_ANGLE = 150.0     # Lockout evaluating completion
+# 3. Press & Return Range of Motion (Step 3 -> Step 5)
+PRESSING_START_ELBOW_ANGLE = 115.0   # Extending elbows off the floor initiates PRESSING_UP
+MIN_VALID_REP_PEAK_ANGLE = 122.0     # Ignore tiny forearm shifts (< 122°)
+HALF_REP_MIN_ELBOW_ANGLE = 125.0     # Stopping between 125° and 148° flags a Half Rep (Bad Rep)
+FULL_LOCKOUT_MIN_ELBOW_ANGLE = 148.0 # Step 3: Arms straight at top lockout
+LOWERING_TRIGGER_DELTA = 10.0        # Bending elbows from peak initiates LOWERING
+REP_COMPLETE_ELBOW_ANGLE = 112.0     # Step 5: Forearms returning to floor completes rep
 
 # 4. Debounce Frame Thresholds
-DEBOUNCE_KNEE_GROUND = 6             # Fast trigger for knees touching the floor
-DEBOUNCE_SAG = 4
-DEBOUNCE_PIKE = 4
-DEBOUNCE_NECK = 4
-DEBOUNCE_HAND_MISALIGN = 4
-DEBOUNCE_HAND_SHOULDER = 6           # Fast 2-frame latch for arm losing vertical alignment
-DEBOUNCE_DROP = 2
-DEBOUNCE_HALF_REP = 6
-DEBOUNCE_ML_FAULT = 5
+DEBOUNCE_PROFILE = 3                 # Frames before flagging lost side view
+DEBOUNCE_KNEE_GROUND = 4             # Frames before flagging knees dropping to floor
+DEBOUNCE_SAG = 4                     # Frames before flagging hip sag
+DEBOUNCE_PIKE = 4                    # Frames before flagging hip pike
+DEBOUNCE_NECK = 5                    # Frames before flagging neck craning/dropping
+DEBOUNCE_FLARE = 4                   # Frames before flagging elbow flare
+DEBOUNCE_DROP = 2                    # Frames before flagging uncontrolled drop to forearms[cite: 9]
+DEBOUNCE_HALF_REP = 4                # Frames dropping before confirming premature lowering
+DEBOUNCE_ML_FAULT = 5                # Consecutive frames for ST-GCN fault[cite: 9]
 
 # 5. Machine Learning Sensitivity
-ML_FAULT_CONFIDENCE_THRESHOLD = 0.75
+ML_FAULT_CONFIDENCE_THRESHOLD = 0.75 # Softmax confidence threshold[cite: 9]
 
 # 6. Model & Buffer Settings
-SEQUENCE_LENGTH = 30
-POST_REP_FEEDBACK_FRAMES = 40
+SEQUENCE_LENGTH = 30                 # ST-GCN temporal window[cite: 9]
+POST_REP_FEEDBACK_FRAMES = 40        # Post-rep feedback hold frames[cite: 9]
 
 # =====================================================================
 
@@ -60,31 +63,32 @@ class PlankTricepsExtensionTracker:
         self.state = "WAITING"
         self.good_reps = 0
         self.bad_reps = 0
-        self.half_reps = 0                 # Kept at 0 for API compatibility
+        self.half_reps = 0                 # Kept at 0 for API compatibility (half reps count as bad reps)[cite: 9]
 
         self.rep_started = False
-        self.depth_reached = False
-        self.min_elbow_angle = 180.0
+        self.lockout_reached = False
+        self.half_press_reached = False
+        self.max_elbow_angle = 0.0
 
         # Posture Tripwires (SIDE / SAGITTAL PROFILE)
-        self.knees_off_floor = True        # Catches knees touching down
-        self.core_maintained = True
-        self.no_pike = True
-        self.neck_neutral = True
-        self.hands_aligned = True
-        self.hands_vertical_to_shoulders = True  # Strict vertical hand alignment
-        self.controlled_descent = True
-        self.ml_posture_maintained = True
+        self.is_side_view = True           # Enforces strict side profile
+        self.knees_off_floor = True        # Step 2: Stay on toes, knees off floor[cite: 9]
+        self.core_maintained = True        # Step 2 & 5: No hip sagging[cite: 9]
+        self.no_pike = True                # Step 2 & 5: No hip piking[cite: 9]
+        self.neck_neutral = True           # Step 2: Head to heels straight line[cite: 9]
+        self.elbows_tucked = True          # Step 4: Keep elbows tucked close to sides
+        self.controlled_descent = True     # Step 5: Lower forearms with control[cite: 9]
+        self.ml_posture_maintained = True  # ST-GCN posture check[cite: 9]
 
         # Debounce counters
+        self.profile_frames = 0
         self.knee_ground_frames = 0
         self.sag_frames = 0
         self.pike_frames = 0
         self.neck_frames = 0
-        self.hand_misalign_frames = 0
-        self.hand_shoulder_frames = 0
+        self.flare_frames = 0
         self.drop_frames = 0
-        self.half_rep_frames = 0
+        self.reversal_frames = 0
         self.ml_fault_frames = 0
         self.plank_frames = 0
         self.unlock_frames = 0
@@ -92,7 +96,7 @@ class PlankTricepsExtensionTracker:
         self.is_ready = False
 
         self.prev_elbow_angle = None
-        self.current_feedback = "Get down on the floor into a straight plank, knees off floor"
+        self.current_feedback = "Set up in a forearm plank sideways to camera (elbows under shoulders)"
         self.mp_pose = mp.solutions.pose
 
         self.sequence_length = SEQUENCE_LENGTH
@@ -121,27 +125,28 @@ class PlankTricepsExtensionTracker:
 
     def _reset_rep_tracking(self):
         self.rep_started = False
-        self.depth_reached = False
-        self.min_elbow_angle = 180.0
+        self.lockout_reached = False
+        self.half_press_reached = False
+        self.max_elbow_angle = 0.0
         self.prev_elbow_angle = None
+        self.reversal_frames = 0
 
+        self.is_side_view = True
         self.knees_off_floor = True
         self.core_maintained = True
         self.no_pike = True
         self.neck_neutral = True
-        self.hands_aligned = True
-        self.hands_vertical_to_shoulders = True
+        self.elbows_tucked = True
         self.controlled_descent = True
         self.ml_posture_maintained = True
 
+        self.profile_frames = 0
         self.knee_ground_frames = 0
         self.sag_frames = 0
         self.pike_frames = 0
         self.neck_frames = 0
-        self.hand_misalign_frames = 0
-        self.hand_shoulder_frames = 0
+        self.flare_frames = 0
         self.drop_frames = 0
-        self.half_rep_frames = 0
         self.ml_fault_frames = 0
 
         self.frame_buffer.clear()
@@ -164,7 +169,7 @@ class PlankTricepsExtensionTracker:
 
         l_vis = sum([l_shoulder.visibility, l_elbow.visibility, l_wrist.visibility, l_hip.visibility, l_knee.visibility, l_ankle.visibility])
         r_vis = sum([r_shoulder.visibility, r_elbow.visibility, r_wrist.visibility, r_hip.visibility, r_knee.visibility, r_ankle.visibility])
-        total_reps = self.good_reps + self.bad_reps
+        total_reps = self.good_reps + self.bad_reps + self.half_reps
 
         if self.post_rep_timer > 0:
             self.post_rep_timer -= 1
@@ -175,7 +180,7 @@ class PlankTricepsExtensionTracker:
                 "exercise": "Plank Triceps Extension", "state": "WAITING",
                 "good_reps": self.good_reps, "bad_reps": self.bad_reps,
                 "half_reps": self.half_reps, "total_reps": total_reps,
-                "form_score": 0, "feedback": "Show full side profile on floor",
+                "form_score": 0, "feedback": "Show full side profile on the floor",
                 "elbow_angle": 0.0, "body_angle": 0.0, "depth_reached": False
             }
 
@@ -187,31 +192,54 @@ class PlankTricepsExtensionTracker:
         active_knee = r_knee if r_vis > l_vis else l_knee
         active_ankle = r_ankle if r_vis > l_vis else l_ankle
 
+        # Sagittal Joint Angles[cite: 9]
         elbow_angle = calculate_angle(active_shoulder, active_elbow, active_wrist)
         body_angle = calculate_angle(active_shoulder, active_hip, active_ankle)
         knee_angle = calculate_angle(active_hip, active_knee, active_ankle)
         neck_angle = calculate_angle(active_ear, active_shoulder, active_hip)
 
-        # Orientation check
-        dy = abs(active_ankle.y - active_shoulder.y)
-        dx = abs(active_ankle.x - active_shoulder.x)
-        is_horizontal = dx > (dy * 0.90)
+        # 1. Strict Side Profile & Horizontal Plank Orientation Check
+        torso_len = np.hypot(active_shoulder.x - active_hip.x, active_shoulder.y - active_hip.y) or 0.40
+        shoulder_span_ratio = abs(l_shoulder.x - r_shoulder.x) / torso_len
+        is_side = shoulder_span_ratio < SETUP_MAX_SHOULDER_SPAN_RATIO
 
-        # Knee on floor check
+        dy_body = abs(active_ankle.y - active_shoulder.y)
+        dx_body = abs(active_ankle.x - active_shoulder.x)
+        is_horizontal = dx_body > (dy_body * 0.90)
+
+        # 2. Step 1: Forearm Plank Geometry (Elbows under shoulders, forearms flat on floor)
+        dx_upper_arm = abs(active_shoulder.x - active_elbow.x)
+        dy_upper_arm = max(abs(active_elbow.y - active_shoulder.y), 0.05)
+        upper_arm_tilt_deg = np.degrees(np.arctan2(dx_upper_arm, dy_upper_arm))
+        elbows_under_shoulders = upper_arm_tilt_deg <= SETUP_MAX_UPPER_ARM_TILT_DEG
+
+        forearm_flat_on_floor = abs(active_elbow.y - active_wrist.y) <= SETUP_MAX_FOREARM_SLOPE
+        is_forearm_bent = (SETUP_MIN_ELBOW_ANGLE <= elbow_angle <= SETUP_MAX_ELBOW_ANGLE)
+
+        # 3. Step 2: Knees Off Floor & True Shoulder-to-Ankle Line Deviation (Sag vs Pike)
         is_knee_on_floor = (knee_angle < MIN_KNEE_STRAIGHT_ANGLE) or (active_knee.y > max(active_hip.y, active_ankle.y) + 0.03)
+        expected_hip_y = (active_shoulder.y + active_ankle.y) / 2.0
+        hip_vertical_deviation = active_hip.y - expected_hip_y  # Positive = sagging toward floor, Negative = piking up
+
+        # 4. Step 4: Elbows Tucked Check (Prevents wide outward elbow flare)
+        elbow_span_ratio = abs(l_elbow.x - r_elbow.x) / torso_len
+        is_elbow_flaring = elbow_span_ratio > MAX_ELBOW_FLARE_SPAN_RATIO
 
         # ---------------------------------------------------------
-        # 1. SETUP GUARD
+        # 1. SETUP GUARD (Step 1 & 2: Forearm Plank Position)
         # ---------------------------------------------------------
-        is_plank = (
-            (elbow_angle >= SETUP_ELBOW_MIN_ANGLE)
+        is_forearm_plank = (
+            is_side
+            and is_horizontal
+            and is_forearm_bent
+            and elbows_under_shoulders
+            and forearm_flat_on_floor
             and (body_angle >= SETUP_BODY_MIN_ANGLE)
             and (knee_angle >= SETUP_KNEE_MIN_ANGLE)
             and not is_knee_on_floor
-            and is_horizontal
         )
 
-        if is_plank:
+        if is_forearm_plank:
             self.plank_frames += 1
             if self.plank_frames > SETUP_MIN_READY_FRAMES:
                 self.is_ready = True
@@ -221,12 +249,20 @@ class PlankTricepsExtensionTracker:
         if not self.is_ready and self.state != "LOCKED_FAULT":
             self.state = "WAITING"
             self.frame_buffer.clear()
-            if not is_horizontal:
-                feedback_msg = "Get horizontal on floor"
+            if not is_side:
+                feedback_msg = "Turn sideways to camera (strict side view required)"
+            elif not is_horizontal:
+                feedback_msg = "Get down on the floor in a horizontal forearm plank"
             elif is_knee_on_floor or knee_angle < SETUP_KNEE_MIN_ANGLE:
-                feedback_msg = "Lift knees off the floor! Hold full toe plank"
+                feedback_msg = "Extend legs straight on your toes (lift knees off floor)"
+            elif body_angle < SETUP_BODY_MIN_ANGLE:
+                feedback_msg = "Brace core and glutes: keep body in a straight line"
+            elif not is_forearm_bent or not forearm_flat_on_floor:
+                feedback_msg = "Start in a forearm plank: rest forearms and hands flat on floor"
+            elif not elbows_under_shoulders:
+                feedback_msg = "Place your elbows directly under your shoulders"
             else:
-                feedback_msg = "Hold straight plank to begin"
+                feedback_msg = "Hold steady forearm plank to begin"
 
             return {
                 "exercise": "Plank Triceps Extension", "state": self.state,
@@ -254,9 +290,14 @@ class PlankTricepsExtensionTracker:
                 probs = exp_scores / np.sum(exp_scores)
                 bad_posture_prob = probs[0]
 
-                if bad_posture_prob >= ML_FAULT_CONFIDENCE_THRESHOLD and self.state not in ["PLANK", "WAITING", "LOCKED_FAULT"]:
+                if bad_posture_prob >= ML_FAULT_CONFIDENCE_THRESHOLD and self.state not in ["FOREARM_PLANK", "WAITING", "LOCKED_FAULT"]:
                     self.ml_fault_frames += 1
                     if self.ml_fault_frames >= DEBOUNCE_ML_FAULT:
+                        if self.ml_posture_maintained:
+                            print(
+                                f"[PLANK TRICEPS FAULT] AI ST-GCN flagged plank breakdown: prob={bad_posture_prob:.2f}",
+                                flush=True,
+                            )
                         self.ml_posture_maintained = False
                 else:
                     self.ml_fault_frames = max(0, self.ml_fault_frames - 1)
@@ -266,76 +307,80 @@ class PlankTricepsExtensionTracker:
         # ---------------------------------------------------------
         # 3. KINEMATIC FORM TRIPWIRES
         # ---------------------------------------------------------
-        if self.rep_started and self.state in ["DESCENDING", "BOTTOM", "ASCENDING"]:
-            # A. Knee Touching Floor
+        if self.rep_started and self.state in ["PRESSING_UP", "LOCKOUT_TOP", "LOWERING"]:
+            # A. Strict Side View Check
+            if not is_side:
+                self.profile_frames += 1
+                if self.profile_frames >= DEBOUNCE_PROFILE:
+                    if self.is_side_view:
+                        print(f"[PLANK TRICEPS FAULT] Lost side view: ratio={shoulder_span_ratio:.2f}", flush=True)
+                    self.is_side_view = False
+            else:
+                self.profile_frames = max(0, self.profile_frames - 1)
+
+            # B. Knees Touching Floor (Step 2)
             if is_knee_on_floor:
                 self.knee_ground_frames += 1
                 if self.knee_ground_frames >= DEBOUNCE_KNEE_GROUND:
+                    if self.knees_off_floor:
+                        print(f"[PLANK TRICEPS FAULT] Knees dropped to floor: knee_angle={knee_angle:.1f}°", flush=True)
                     self.knees_off_floor = False
             else:
                 self.knee_ground_frames = max(0, self.knee_ground_frames - 1)
 
-            # B. Core Sagging (Banana Back)
-            if (active_hip.y > active_shoulder.y + 0.04) and (body_angle < MIN_CORE_SAG_BODY_ANGLE):
+            # C. Core Sagging (Step 2 & 5: Hips sagging below shoulder-ankle line)
+            if (hip_vertical_deviation > 0.03) and (body_angle < MIN_CORE_SAG_BODY_ANGLE):
                 self.sag_frames += 1
                 if self.sag_frames >= DEBOUNCE_SAG:
+                    if self.core_maintained:
+                        print(f"[PLANK TRICEPS FAULT] Hips sagged: body_angle={body_angle:.1f}°", flush=True)
                     self.core_maintained = False
             else:
                 self.sag_frames = max(0, self.sag_frames - 1)
 
-            # C. Hip Piking (Butt too high)
-            if active_hip.y < active_shoulder.y and body_angle < MIN_CORE_PIKE_BODY_ANGLE:
+            # D. Hip Piking (Step 2 & 5: Butt piking upward above shoulder-ankle line)
+            if (hip_vertical_deviation < -0.04) and (body_angle < MIN_CORE_PIKE_BODY_ANGLE):
                 self.pike_frames += 1
                 if self.pike_frames >= DEBOUNCE_PIKE:
+                    if self.no_pike:
+                        print(f"[PLANK TRICEPS FAULT] Hips piked upward: body_angle={body_angle:.1f}°", flush=True)
                     self.no_pike = False
             else:
                 self.pike_frames = max(0, self.pike_frames - 1)
 
-            # D. Neck Craning
+            # E. Step 4: Keep Elbows Tucked (No outward flare)
+            if is_elbow_flaring:
+                self.flare_frames += 1
+                if self.flare_frames >= DEBOUNCE_FLARE:
+                    if self.elbows_tucked:
+                        print(f"[PLANK TRICEPS FAULT] Elbows flared outward: ratio={elbow_span_ratio:.2f}", flush=True)
+                    self.elbows_tucked = False
+            else:
+                self.flare_frames = max(0, self.flare_frames - 1)
+
+            # F. Neutral Neck Check
             if neck_angle < MIN_NECK_NEUTRAL_ANGLE:
                 self.neck_frames += 1
                 if self.neck_frames >= DEBOUNCE_NECK:
+                    if self.neck_neutral:
+                        print(f"[PLANK TRICEPS FAULT] Head/neck dropped: neck_angle={neck_angle:.1f}°", flush=True)
                     self.neck_neutral = False
             else:
                 self.neck_frames = max(0, self.neck_frames - 1)
 
-            # E. Hand Asymmetry
-            if l_wrist.visibility > 0.45 and r_wrist.visibility > 0.45:
-                vertical_wrist_diff = abs(l_wrist.y - r_wrist.y)
-                horizontal_wrist_stagger = abs(l_wrist.x - r_wrist.x)
-                if vertical_wrist_diff > MAX_WRIST_Y_DIFF or horizontal_wrist_stagger > MAX_WRIST_X_STAGGER:
-                    self.hand_misalign_frames += 1
-                    if self.hand_misalign_frames >= DEBOUNCE_HAND_MISALIGN:
-                        self.hands_aligned = False
-                else:
-                    self.hand_misalign_frames = max(0, self.hand_misalign_frames - 1)
-
-            # F. Strict Vertical Hand-to-Shoulder Alignment When Going Down
-            if self.state in ["DESCENDING", "BOTTOM"]:
-                dx_arm = abs(active_shoulder.x - active_wrist.x)
-                dy_arm = max(abs(active_wrist.y - active_shoulder.y), 0.05)
-                arm_vertical_tilt = np.degrees(np.arctan2(dx_arm, dy_arm))
-
-                if arm_vertical_tilt > MAX_ARM_VERTICAL_DEVIATION_DEG:
-                    self.hand_shoulder_frames += 1
-                    if self.hand_shoulder_frames >= DEBOUNCE_HAND_SHOULDER:
-                        self.hands_vertical_to_shoulders = False
-                else:
-                    self.hand_shoulder_frames = max(0, self.hand_shoulder_frames - 1)
-
-            self.min_elbow_angle = min(self.min_elbow_angle, elbow_angle)
+            self.max_elbow_angle = max(self.max_elbow_angle, elbow_angle)
 
         # ---------------------------------------------------------
-        # 4. STATE MACHINE (WITH LOCKED_FAULT FREEZE)
+        # 4. STATE MACHINE (FOREARM PLANK -> PRESS UP -> LOWER TO FOREARMS)
         # ---------------------------------------------------------
         if self.state == "LOCKED_FAULT":
-            if is_plank:
+            if is_forearm_plank:
                 self.unlock_frames += 1
                 if self.unlock_frames >= UNLOCK_RESET_FRAMES:
-                    self.state = "PLANK"
+                    self.state = "FOREARM_PLANK"
                     self.unlock_frames = 0
                     self._reset_rep_tracking()
-                    self.current_feedback = "Reset complete! Keep knees locked and hands under shoulders."
+                    self.current_feedback = "Reset complete! Drive through palms to extend elbows."
             else:
                 self.unlock_frames = 0
 
@@ -349,47 +394,63 @@ class PlankTricepsExtensionTracker:
             }
 
         if self.state == "WAITING" and self.is_ready:
-            self.state = "PLANK"
+            self.state = "FOREARM_PLANK"
             if self.post_rep_timer == 0:
-                self.current_feedback = "Lower down, keeping hands stacked directly under shoulders!"
+                self.current_feedback = "Drive through your palms and extend elbows until arms are straight!"
 
-        elif elbow_angle <= DESCENDING_START_ELBOW_ANGLE and self.state in ["PLANK", "ASCENDING"]:
-            self.state = "DESCENDING"
+        # Step 3: Press Up from Forearm Plank
+        elif self.state in ["FOREARM_PLANK", "LOWERING"] and elbow_angle > PRESSING_START_ELBOW_ANGLE:
+            self.state = "PRESSING_UP"
             self.rep_started = True
-            self.min_elbow_angle = elbow_angle
-            self.half_rep_frames = 0
+            self.max_elbow_angle = elbow_angle
+            self.reversal_frames = 0
             if self.post_rep_timer == 0:
-                self.current_feedback = "Lower down to 90 degrees, keep hands vertically under shoulders..."
+                self.current_feedback = "Press up! Keep elbows tucked and body straight..."
 
-        # Full ROM: Elbows <= 90°
-        elif self.state == "DESCENDING" and elbow_angle <= FULL_DEPTH_MAX_ELBOW_ANGLE:
-            self.depth_reached = True
-            self.half_rep_frames = 0
-            self.state = "BOTTOM"
+        # Step 3 Complete: Full Straight-Arm Lockout Reached (>= 148°)
+        elif self.state == "PRESSING_UP" and elbow_angle >= FULL_LOCKOUT_MIN_ELBOW_ANGLE:
+            self.lockout_reached = True
+            self.state = "LOCKOUT_TOP"
+            self.reversal_frames = 0
             if self.post_rep_timer == 0:
-                self.current_feedback = "Depth hit! Drive floor away."
+                self.current_feedback = "Full lockout! Slowly lower forearms back to the floor."
 
-        elif self.state == "BOTTOM" and elbow_angle > ASCENDING_START_ELBOW_ANGLE:
-            self.state = "ASCENDING"
+        # Premature Lowering (Half Rep Branch: Lowered back down before straightening arms)
+        elif self.state == "PRESSING_UP" and not self.lockout_reached and (self.max_elbow_angle - elbow_angle) > LOWERING_TRIGGER_DELTA:
+            self.reversal_frames += 1
+            if self.reversal_frames >= DEBOUNCE_HALF_REP:
+                if self.max_elbow_angle >= HALF_REP_MIN_ELBOW_ANGLE:
+                    self.half_press_reached = True
+                self.state = "LOWERING"
+                self.current_feedback = "Incomplete lockout! Lowering early..."
+                print(
+                    f"[PLANK TRICEPS FAULT] Early lowering before full arm extension: max_elbow={self.max_elbow_angle:.1f}° "
+                    f"(required={FULL_LOCKOUT_MIN_ELBOW_ANGLE}°)",
+                    flush=True,
+                )
+
+        # Step 5: Lower with Control from Top Lockout
+        elif self.state == "LOCKOUT_TOP" and (self.max_elbow_angle - elbow_angle) > LOWERING_TRIGGER_DELTA:
+            self.state = "LOWERING"
             if self.post_rep_timer == 0:
-                self.current_feedback = "Push back to full lockout!"
+                self.current_feedback = "Lower forearms slowly to floor without sagging hips..."
 
-        # Incomplete rep: Early reversal check with debounce
-        elif self.state == "DESCENDING" and (elbow_angle - self.min_elbow_angle) > EARLY_ASCENT_DELTA:
-            self.half_rep_frames += 1
-            if self.half_rep_frames >= DEBOUNCE_HALF_REP:
-                self.state = "ASCENDING"
-                self.current_feedback = "Incomplete depth! Pushing up early..."
-        else:
-            self.half_rep_frames = max(0, self.half_rep_frames - 1)
+        if self.state == "PRESSING_UP" and not ((self.max_elbow_angle - elbow_angle) > LOWERING_TRIGGER_DELTA):
+            self.reversal_frames = max(0, self.reversal_frames - 1)
 
-        # Eccentric drop detector
-        if self.rep_started and self.state in ["DESCENDING", "ASCENDING"]:
+        # Step 5: Eccentric drop speed detector (catches crashing forearms onto floor)[cite: 9]
+        if self.rep_started and self.state in ["LOWERING", "PRESSING_UP"]:
             if self.prev_elbow_angle is not None:
                 drop_speed = self.prev_elbow_angle - elbow_angle
                 if drop_speed > ECCENTRIC_DROP_SPEED_MAX:
                     self.drop_frames += 1
                     if self.drop_frames >= DEBOUNCE_DROP:
+                        if self.controlled_descent:
+                            print(
+                                f"[PLANK TRICEPS FAULT] Uncontrolled drop speed: {drop_speed:.1f} deg/frame "
+                                f"(max={ECCENTRIC_DROP_SPEED_MAX})",
+                                flush=True,
+                            )
                         self.controlled_descent = False
                 else:
                     self.drop_frames = max(0, self.drop_frames - 1)
@@ -398,63 +459,92 @@ class PlankTricepsExtensionTracker:
             self.prev_elbow_angle = None
 
         # ---------------------------------------------------------
-        # 5. REP COMPLETION & EVALUATION
+        # 5. REP COMPLETION & EVALUATION (WHEN FOREARMS RETURN TO FLOOR)
         # ---------------------------------------------------------
-        if self.rep_started and self.state in ["ASCENDING", "BOTTOM"] and elbow_angle >= REP_COMPLETE_ELBOW_ANGLE:
-            is_bad_rep = False
+        if self.rep_started and self.state in ["LOWERING", "LOCKOUT_TOP", "PRESSING_UP"] and elbow_angle <= REP_COMPLETE_ELBOW_ANGLE:
+            # Ignore minor setup shifts on the floor (< 122°)
+            if self.max_elbow_angle < MIN_VALID_REP_PEAK_ANGLE and self.knees_off_floor and self.is_side_view:
+                self._reset_rep_tracking()
+                self.state = "FOREARM_PLANK"
+                return {
+                    "exercise": "Plank Triceps Extension", "state": self.state,
+                    "good_reps": self.good_reps, "bad_reps": self.bad_reps,
+                    "half_reps": self.half_reps, "total_reps": total_reps,
+                    "form_score": 100, "feedback": self.current_feedback,
+                    "elbow_angle": round(elbow_angle, 1), "body_angle": round(body_angle, 1),
+                    "depth_reached": False
+                }
 
-            if not self.knees_off_floor:
-                self.current_feedback = "Bad rep: Knees touched floor! Stay on your toes. Hold plank to reset."
+            is_bad_rep = False
+            is_half_rep = False
+
+            if not self.is_side_view:
+                self.current_feedback = "Bad rep: Stay sideways to camera! Hold forearm plank to reset."
                 is_bad_rep = True
-            elif not self.hands_aligned:
-                self.current_feedback = "Bad rep: Uneven hand placement! Align hands evenly and hold plank to reset."
+            elif not self.knees_off_floor:
+                self.current_feedback = "Bad rep: Knees touched floor! Stay on your toes. Hold forearm plank to reset."
                 is_bad_rep = True
-            elif not self.hands_vertical_to_shoulders:
-                self.current_feedback = "Bad rep: Hands not aligned vertically under shoulders! Keep hands stacked under shoulders."
+            elif not self.elbows_tucked:
+                self.current_feedback = "Bad rep: Keep elbows tucked close to your sides! Do not flare outward."
                 is_bad_rep = True
             elif not self.core_maintained:
-                self.current_feedback = "Bad rep: Core collapsed! Do not sag hips. Hold plank to reset."
+                self.current_feedback = "Bad rep: Hips sagged! Keep body in a rigid straight line."
                 is_bad_rep = True
             elif not self.no_pike:
-                self.current_feedback = "Bad rep: Butt too high! Maintain straight plank and hold plank to reset."
+                self.current_feedback = "Bad rep: Hips piked up! Keep body in a straight line from head to heels."
                 is_bad_rep = True
             elif not self.neck_neutral:
-                self.current_feedback = "Bad rep: Neutral neck! Do not drop chin. Hold plank to reset."
+                self.current_feedback = "Bad rep: Keep neck neutral in line with your spine!"
                 is_bad_rep = True
             elif not self.controlled_descent:
-                self.current_feedback = "Bad rep: Control the negative! Do not drop to floor. Hold plank to reset."
+                self.current_feedback = "Bad rep: Lower forearms slowly with control! Do not drop to the floor."
                 is_bad_rep = True
             elif not self.ml_posture_maintained:
-                self.current_feedback = "Bad rep: AI detected broken plank mechanics! Hold plank to reset."
+                self.current_feedback = "Bad rep: AI detected broken plank mechanics! Hold forearm plank to reset."
                 is_bad_rep = True
-            elif not self.depth_reached:
-                self.current_feedback = "Bad rep: Incomplete depth! Lower down to 90° and hold plank to reset."
-                is_bad_rep = True
+            elif not self.lockout_reached:
+                if self.max_elbow_angle >= HALF_REP_MIN_ELBOW_ANGLE or self.half_press_reached:
+                    self.current_feedback = "Bad rep: Half rep! Extend elbows until arms are fully straight."
+                    is_half_rep = True
+                else:
+                    self.current_feedback = "Bad rep: Press was too shallow! Extend arms fully to lockout."
+                    is_bad_rep = True
 
-            if is_bad_rep:
+            rep_num = self.good_reps + self.bad_reps + self.half_reps + 1
+            if is_bad_rep or is_half_rep:
                 self.bad_reps += 1
+                print(
+                    f"[PLANK TRICEPS REP #{rep_num} -> BAD REP] "
+                    f"Reason: {self.current_feedback} | max_elbow={self.max_elbow_angle:.1f}°, body={body_angle:.1f}°",
+                    flush=True,
+                )
                 self.state = "LOCKED_FAULT"
                 self.unlock_frames = 0
                 self._reset_rep_tracking()
             else:
                 self.good_reps += 1
-                self.current_feedback = "Clean plank triceps extension! Good rep."
-                self.state = "PLANK"
+                self.current_feedback = "Clean Plank Triceps Extension! Great lockout and core control."
+                print(
+                    f"[PLANK TRICEPS REP #{rep_num} -> GOOD REP] "
+                    f"max_elbow={self.max_elbow_angle:.1f}°, body={body_angle:.1f}°",
+                    flush=True,
+                )
+                self.state = "FOREARM_PLANK"
                 self._reset_rep_tracking()
 
             self.post_rep_timer = POST_REP_FEEDBACK_FRAMES
 
-        # Dynamic Scoring
-        form_score = max(0, min(100, int(100 - abs(elbow_angle - 90) * 0.4))) if self.state != "PLANK" else 100
+        # Dynamic Scoring[cite: 9]
+        form_score = 100 if self.state == "FOREARM_PLANK" else max(0, min(100, int((elbow_angle / 150) * 100)))
+        if not self.is_side_view: form_score -= 35
         if not self.knees_off_floor: form_score -= 40
-        if not self.hands_vertical_to_shoulders: form_score -= 30
+        if not self.elbows_tucked: form_score -= 30
         if not self.core_maintained: form_score -= 30
         if not self.no_pike: form_score -= 25
-        if not self.hands_aligned: form_score -= 20
         if not self.neck_neutral: form_score -= 15
         if not self.controlled_descent: form_score -= 20
         if not self.ml_posture_maintained: form_score -= 30
-        if not self.depth_reached and self.state == "ASCENDING": form_score -= 25
+        if not self.lockout_reached and self.state == "LOWERING": form_score -= 25
         form_score = max(0, form_score)
 
         return {
@@ -468,5 +558,5 @@ class PlankTricepsExtensionTracker:
             "feedback": self.current_feedback,
             "elbow_angle": round(elbow_angle, 1),
             "body_angle": round(body_angle, 1),
-            "depth_reached": self.depth_reached
+            "depth_reached": self.lockout_reached
         }
