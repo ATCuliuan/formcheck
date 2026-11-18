@@ -1,3 +1,4 @@
+import math
 import os
 from collections import deque
 import numpy as np
@@ -6,53 +7,71 @@ import mediapipe as mp
 from core.kinematics import calculate_angle
 
 # =====================================================================
-# TRACKER TUNING CONFIGURATION (TRICEP DIPS - STRICT SIDE VIEW)
+# TRACKER TUNING CONFIGURATION (TRICEPS DIPS - BEGINNER SIDE VIEW)
 # =====================================================================
 
-# 1. Setup & Starting Guard (Step 1-3: Hands on Bench Next to Hips, Arms Locked, Side View)
-SETUP_MAX_SHOULDER_SPAN_RATIO = 0.30 # Strict side profile (16:9 webcam calibrated)
-SETUP_MAX_HIP_SPAN_RATIO = 0.24      # Hips aligned sideways to camera
-SETUP_ELBOW_MIN_ANGLE = 144.0        # Step 1 & 6: Arms locked out supporting body on bench
-SETUP_TORSO_VERTICAL_MAX = 28.0      # Step 3: Torso upright close to edge of bench
-SETUP_MAX_HIP_WRIST_Y_RATIO = 0.55   # Step 1 & 2: Hands flat on bench edge next to hips (normalized by torso_len)
-SETUP_MIN_READY_FRAMES = 6           # Consecutive frames to confirm READY
-UNLOCK_RESET_FRAMES = 10             # Frames held at top lockout to clear LOCKED_FAULT
-MIN_VISIBILITY_THRESHOLD = 2.0       # Minimum upper-body keypoint visibility
+# 1. Setup & Starting Guard (Side View, Hands Planted on Chair/Bench, Legs Optional)
+SETUP_MAX_SIDE_SPAN_RATIO = 0.48      # Enforces side profile (loose enough for slight 3/4 angle)
+SETUP_MIN_ELBOW_ANGLE = 148.0         # Arms mostly straight at top (no hyperextension needed)
+SETUP_MAX_HIP_DRIFT_RATIO = 0.55      # Hips stay close to bench/hands at setup
+SETUP_MAX_TORSO_LEAN_DEG = 26.0       # Torso upright at setup (prevents hunched/reclined start)
+SETUP_MIN_WRIST_BELOW_SHOULDER = 0.45 # Hands planted below shoulders near hip/chair height
+SETUP_MIN_READY_FRAMES = 6            # Consecutive frames to confirm READY
+UNLOCK_RESET_FRAMES = 10              # Frames held at top to clear LOCKED_FAULT
+MIN_VISIBILITY_THRESHOLD = 0.35       # Minimum active-side core landmark visibility
+OUT_OF_VIEW_RESET_FRAMES = 15         # Frames out of view before full state reset
+REST_EXIT_WRIST_SHIFT_RATIO = 0.25    # Standing up OR sitting down onto new height exits to WAITING
+REST_EXIT_FRAMES = 12                 # Frames with shifted hands/height to exit cleanly between sets
 
-# 2. Kinematic & Form Thresholds (Step 3, 4, 5: Spine Close to Bench, Shoulders Down, Elbows Pointed Back)
-MAX_TORSO_TILT_ACTIVE = 34.0         # Step 3: Keep torso upright (do not fold forward)
-MAX_HIP_BENCH_DRIFT_RATIO = 0.62     # Step 3: Keep hips close to bench edge (loosened from 0.45 to prevent false flags)
-SHRUG_NECK_RATIO_FACTOR = 0.58       # Step 3: Roll shoulders back and down (catches true shoulder dumping into ears)
-MIN_ELBOW_BACKWARD_RATIO = -0.04     # Step 4: Active elbow must point backward behind shoulder/wrist line
-MIN_BODY_DIP_DROP_RATIO = 0.07       # Step 4: Both hips & shoulders must lower toward floor
-ECCENTRIC_DROP_SPEED_MAX = 24.0      # Step 4: Slowly bend elbows under control (deg/frame)
-EARLY_ASCENT_DELTA = 8.0             # Early upward push before reaching ~90° parallel upper arms
+# 2. Kinematic & Form Thresholds (Beginner-Friendly Chair/Bench Dip)
+MAX_HIP_DRIFT_RATIO = 0.58            # Horizontal hip-to-wrist gap / torso height (strains shoulders)
+ADVISORY_HIP_DRIFT_RATIO = 0.45       # Mild drift reminder without failing rep
+SHRUG_NECK_RATIO_FACTOR = 0.62        # Signed ear-to-shoulder shrink ratio catching shoulder sinking
+MIN_ABSOLUTE_NECK_RATIO = 0.12        # Absolute floor catching users who start already slumped/shrugged
+MIN_SAFE_ELBOW_ANGLE = 52.0           # Extreme acute elbow collapse (< 52 deg) risks shoulder strain
+MAX_SHOULDER_BELOW_ELBOW_RATIO = 0.08 # Shoulder dropping clearly below elbow flags excessive depth
+MIN_UPPER_ARM_RATIO = 0.34            # Hard floor for 2D upper-arm length / torso height (elbow flare)
+FLARE_UPPER_ARM_SHRINK_FACTOR = 0.74  # >26% drop from setup upper-arm length flags chicken-wing flare
+ELBOW_SPREAD_CHECK_MIN_SPAN = 0.20    # Min shoulder span ratio (3/4 view) for bilateral elbow spread
+MAX_ELBOW_SPREAD_TO_SHOULDER = 1.48   # Bilateral elbow width > 1.48x shoulder span flags wide elbows
+MAX_ELBOW_FORWARD_RATIO = 0.12        # Elbow bending clearly in front of torso (unsigned-angle cheat)
+MIN_FACING_NOSE_OFFSET = 0.05         # Minimum nose-to-shoulder X offset to trust facing direction
+MAX_TORSO_LEAN_DEG = 32.0             # Excessive forward hunch or backward slump (> 32 deg from vertical)
+ADVISORY_TORSO_LEAN_DEG = 24.0        # Mild torso lean reminder without failing rep
+ADVISORY_HEAD_FORWARD_RATIO = 0.32    # Chin-to-chest / forward head poke reminder
+ADVISORY_KNEE_EXTEND_DELTA = 18.0     # Knee extending > 18 deg past setup baseline flags leg drive
+ADVISORY_KNEE_KICK_SPEED = 6.0        # Fast knee snap (> 6 deg/frame) on ascent flags leg drive
+MAX_WRIST_LIFT_DURING_REP = 0.22      # Hands must stay planted on chair (rejects curls/hand lift)
+MIN_SHOULDER_DROP_FOR_DEPTH = 0.08    # Torso must actually descend toward hands for valid depth
+ECCENTRIC_DROP_SPEED_MAX = 25.0       # Free-fall drop into bottom (deg/frame)
 
-# 3. Dip Depth & Range of Motion (Step 4, 5, 6: Upper Arms Parallel ~90° -> Full Lockout)
-DESCENDING_START_ELBOW_ANGLE = 136.0 # Bending elbows below 136° initiates DESCENDING
-MIN_VALID_REP_FLEXION_ANGLE = 128.0  # Ignore minor seated weight shifts (> 128°)
-HALF_DIP_MAX_ELBOW_ANGLE = 120.0     # Stopping between 99° and 120° flags Half Rep (Bad Rep)
-FULL_DEPTH_MAX_ELBOW_ANGLE = 98.0    # Step 4: Upper arms parallel to floor (<= 98° in 2D side projection)
-ASCENDING_START_ELBOW_ANGLE = 105.0  # Step 5: Pressing up from BOTTOM
-REP_COMPLETE_ELBOW_ANGLE = 144.0     # Step 6: Full tricep lockout at top
+# 3. Range of Motion & Half-Rep Thresholds
+DESCENDING_START_ANGLE = 138.0        # Bending elbow below 138 deg initiates DESCENDING
+MIN_VALID_REP_ELBOW_ANGLE = 124.0     # Ignore minor resting twitches at top (> 124 deg)
+BOTTOM_TARGET_ANGLE = 102.0           # Forgiving beginner depth (<= 102 deg instead of harsh 90 deg)
+ASCENDING_START_ANGLE = 112.0         # Extending elbow from BOTTOM initiates ASCENDING
+EARLY_REVERSAL_DELTA = 12.0           # Pressing up > 12 deg before reaching depth flags Half Rep
+REP_COMPLETE_ANGLE = 148.0            # Extending arms back to top completes rep
 
 # 4. Debounce Frame Thresholds
-DEBOUNCE_PROFILE = 4
-DEBOUNCE_SHOULDER_DUMP = 5
-DEBOUNCE_TORSO = 4
-DEBOUNCE_HIP_DRIFT = 5               # Frames before flagging hips drifting far away from bench
-DEBOUNCE_ELBOW_DIR = 4               # Frames before flagging elbows collapsing forward instead of pointing back
-DEBOUNCE_DROP = 2
+DEBOUNCE_SIDE = 4
+DEBOUNCE_HIP_DRIFT = 5
+DEBOUNCE_SHRUG = 5
+DEBOUNCE_OVER_DEPTH = 4
+DEBOUNCE_ELBOW_FLARE = 5
+DEBOUNCE_ELBOW_FORWARD = 5
+DEBOUNCE_TORSO_LEAN = 5
+DEBOUNCE_HAND_LIFT = 4
+DEBOUNCE_DROP = 3
 DEBOUNCE_HALF_REP = 4
-DEBOUNCE_ML_FAULT = 5
+DEBOUNCE_ML_FAULT = 6
 
-# 5. Machine Learning Sensitivity
-ML_FAULT_CONFIDENCE_THRESHOLD = 0.75
+ML_FAULT_CONFIDENCE_THRESHOLD = 0.82
 SEQUENCE_LENGTH = 30
 POST_REP_FEEDBACK_FRAMES = 40
 
 
-class TricepDipsTracker:
+class TricepsDipsTracker:
     def __init__(self):
         self.state = "WAITING"
         self.good_reps = 0
@@ -61,48 +80,70 @@ class TricepDipsTracker:
 
         self.rep_started = False
         self.depth_reached = False
-        self.was_half_rep = False
+        self.half_dip_reached = False
         self.min_elbow_angle = 180.0
-        self.max_shoulder_drop_ratio = 0.0
-        self.max_hip_drop_ratio = 0.0
+        self.max_hip_drift = 0.0
+        self.max_torso_lean = 0.0
+        self.min_upper_arm_ratio = 1.0
+        self.reversal_frames = 0
+        self.active_side = None
 
-        # Posture Tripwires (STRICT SIDE / SAGITTAL VIEW)
+        # Instructor Tripwires (SIDE VIEW)
         self.is_side_view = True
-        self.torso_upright = True          # Step 3: Keep torso upright
-        self.spine_close_to_bench = True   # Step 3: Keep spine/hips close to edge of bench
-        self.shoulders_packed = True       # Step 3: Roll shoulders back and down (no shrugging)
-        self.elbows_pointed_back = True    # Step 4: Elbows hinge backward behind shoulders
-        self.controlled_descent = True     # Step 4: Lower slowly under control
+        self.hands_planted = True         # Wrists stay anchored on chair (no lifting/curling)
+        self.elbows_behind_torso = True   # Elbows bend backward behind torso, not forward
+        self.hips_close = True            # Hips stay close to chair edge
+        self.shoulders_depressed = True   # No sinking/shrugging ears into shoulders
+        self.safe_depth = True            # No dangerous bottoming out below parallel
+        self.elbows_tucked = True         # Elbows point straight back (no chicken-wing flare)
+        self.torso_upright = True         # No excessive forward hunch or backward slump
+        self.controlled_descent = True    # No uncontrolled drop into bottom
         self.ml_posture_maintained = True
 
+        # Advisory / Warning Flags & Baselines
+        self.mild_drift_warning = False
+        self.mild_lean_warning = False
+        self.head_forward_warning = False
+        self.leg_drive_warning = False
         self.baseline_neck_ratio = None
+        self.baseline_upper_arm_ratio = None
+        self.baseline_wrist_y = None
         self.baseline_shoulder_y = None
-        self.baseline_hip_y = None
-        self.baseline_wrist_x = None
+        self.baseline_knee_angle = None
 
-        # Debounce counters
-        self.profile_frames = 0
-        self.shoulder_dump_frames = 0
-        self.torso_frames = 0
-        self.hip_drift_frames = 0
-        self.flare_frames = 0
-        self.drop_frames = 0
-        self.half_rep_frames = 0
-        self.ml_fault_frames = 0
-        self.ready_frames = 0
+        # Debounce & Lifecycle counters
+        self.side_frames = 0
+        self.setup_frames = 0
         self.unlock_frames = 0
+        self.out_of_view_frames = 0
+        self.rest_exit_frames = 0
+        self.drift_frames = 0
+        self.mild_drift_frames = 0
+        self.shrug_frames = 0
+        self.over_depth_frames = 0
+        self.flare_frames = 0
+        self.elbow_fwd_frames = 0
+        self.lean_frames = 0
+        self.mild_lean_frames = 0
+        self.head_frames = 0
+        self.leg_frames = 0
+        self.hand_lift_frames = 0
+        self.drop_frames = 0
+        self.ml_bad_frames = 0
         self.post_rep_timer = 0
-        self.is_ready = False
 
+        self.is_ready = False
         self.prev_elbow_angle = None
-        self.current_feedback = "Sit on bench edge sideways to camera: hands next to hips, arms locked"
+        self.prev_knee_angle = None
+
+        self.current_feedback = "Turn sideways, place hands on chair, and press arms straight"
         self.mp_pose = mp.solutions.pose
 
         self.sequence_length = SEQUENCE_LENGTH
         self.frame_buffer = deque(maxlen=self.sequence_length)
 
         self.interpreter = None
-        model_path = os.path.join("models", "tflite", "st_gcn_tricep_dips.tflite")
+        model_path = os.path.join("models", "tflite", "st_gcn_triceps_dips.tflite")
         if os.path.exists(model_path):
             try:
                 self.interpreter = Interpreter(model_path=model_path)
@@ -116,7 +157,8 @@ class TricepDipsTracker:
         target_indices = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
         coords = []
         for idx in target_indices:
-            coords.append([landmarks[idx].x, landmarks[idx].y, landmarks[idx].z])
+            lm = landmarks[idx]
+            coords.append([lm.x, lm.y, lm.z])
         while len(coords) < 25:
             coords.append([0.0, 0.0, 0.0])
         return np.array(coords, dtype=np.float32)
@@ -124,28 +166,44 @@ class TricepDipsTracker:
     def _reset_rep_tracking(self):
         self.rep_started = False
         self.depth_reached = False
-        self.was_half_rep = False
+        self.half_dip_reached = False
         self.min_elbow_angle = 180.0
-        self.max_shoulder_drop_ratio = 0.0
-        self.max_hip_drop_ratio = 0.0
+        self.max_hip_drift = 0.0
+        self.max_torso_lean = 0.0
+        self.min_upper_arm_ratio = 1.0
+        self.reversal_frames = 0
         self.prev_elbow_angle = None
+        self.prev_knee_angle = None
 
         self.is_side_view = True
+        self.hands_planted = True
+        self.elbows_behind_torso = True
+        self.hips_close = True
+        self.shoulders_depressed = True
+        self.safe_depth = True
+        self.elbows_tucked = True
         self.torso_upright = True
-        self.spine_close_to_bench = True
-        self.shoulders_packed = True
-        self.elbows_pointed_back = True
         self.controlled_descent = True
+        self.mild_drift_warning = False
+        self.mild_lean_warning = False
+        self.head_forward_warning = False
+        self.leg_drive_warning = False
         self.ml_posture_maintained = True
 
-        self.profile_frames = 0
-        self.shoulder_dump_frames = 0
-        self.torso_frames = 0
-        self.hip_drift_frames = 0
+        self.side_frames = 0
+        self.drift_frames = 0
+        self.mild_drift_frames = 0
+        self.shrug_frames = 0
+        self.over_depth_frames = 0
         self.flare_frames = 0
+        self.elbow_fwd_frames = 0
+        self.lean_frames = 0
+        self.mild_lean_frames = 0
+        self.head_frames = 0
+        self.leg_frames = 0
+        self.hand_lift_frames = 0
         self.drop_frames = 0
-        self.half_rep_frames = 0
-        self.ml_fault_frames = 0
+        self.ml_bad_frames = 0
 
         self.frame_buffer.clear()
 
@@ -163,120 +221,190 @@ class TricepDipsTracker:
         r_hip = landmarks[self.mp_pose.PoseLandmark.RIGHT_HIP.value]
         l_knee = landmarks[self.mp_pose.PoseLandmark.LEFT_KNEE.value]
         r_knee = landmarks[self.mp_pose.PoseLandmark.RIGHT_KNEE.value]
+        l_ankle = landmarks[self.mp_pose.PoseLandmark.LEFT_ANKLE.value]
+        r_ankle = landmarks[self.mp_pose.PoseLandmark.RIGHT_ANKLE.value]
 
-        l_vis = sum([l_shoulder.visibility, l_elbow.visibility, l_wrist.visibility, l_hip.visibility])
-        r_vis = sum([r_shoulder.visibility, r_elbow.visibility, r_wrist.visibility, r_hip.visibility])
+        # Ear excluded from hard visibility guard so hair/head tilt does not drop tracking
+        l_core = (l_shoulder, l_elbow, l_wrist, l_hip)
+        r_core = (r_shoulder, r_elbow, r_wrist, r_hip)
+        l_vis_sum = sum(p.visibility for p in l_core)
+        r_vis_sum = sum(p.visibility for p in r_core)
+        l_vis_min = min(p.visibility for p in l_core)
+        r_vis_min = min(p.visibility for p in r_core)
+
         total_reps = self.good_reps + self.bad_reps + self.half_reps
 
         if self.post_rep_timer > 0:
             self.post_rep_timer -= 1
 
-        if max(l_vis, r_vis) < MIN_VISIBILITY_THRESHOLD:
+        if max(l_vis_min, r_vis_min) < MIN_VISIBILITY_THRESHOLD:
+            self.out_of_view_frames += 1
+            self.prev_elbow_angle = None
+            self.prev_knee_angle = None
             self.frame_buffer.clear()
+            if self.out_of_view_frames >= OUT_OF_VIEW_RESET_FRAMES:
+                self.state = "WAITING"
+                self.is_ready = False
+                self.setup_frames = 0
+                self.unlock_frames = 0
+                self.active_side = None
+                self.baseline_wrist_y = None
+                self.baseline_shoulder_y = None
+                self._reset_rep_tracking()
             return {
-                "exercise": "Tricep Dips", "state": "WAITING",
+                "exercise": "Triceps Dips", "state": "WAITING",
                 "good_reps": self.good_reps, "bad_reps": self.bad_reps,
                 "half_reps": self.half_reps, "total_reps": total_reps,
-                "form_score": 0, "feedback": "Step back: Show full side profile on bench",
-                "elbow_angle": 0.0, "depth_reached": False
+                "form_score": 0, "feedback": "Step back: Full side profile must be visible",
+                "elbow_angle": 0.0, "hip_drift": 0.0, "torso_lean": 0.0
             }
 
-        use_right = (r_vis >= l_vis)
-        active_ear = r_ear if use_right else l_ear
-        active_shoulder = r_shoulder if use_right else l_shoulder
-        active_elbow = r_elbow if use_right else l_elbow
-        active_wrist = r_wrist if use_right else l_wrist
-        active_hip = r_hip if use_right else l_hip
-        active_knee = r_knee if use_right else l_knee
+        self.out_of_view_frames = 0
 
-        # 1. Sagittal Elbow & Torso Angles
+        # Dynamic Side Selection with Active-Rep Lock (prevents mid-rep left/right flicker)
+        if not self.rep_started or self.active_side is None:
+            self.active_side = "RIGHT" if r_vis_sum > l_vis_sum else "LEFT"
+        elif self.active_side == "RIGHT" and r_vis_min < MIN_VISIBILITY_THRESHOLD and l_vis_min >= MIN_VISIBILITY_THRESHOLD:
+            self.active_side = "LEFT"
+            self.prev_elbow_angle = None
+        elif self.active_side == "LEFT" and l_vis_min < MIN_VISIBILITY_THRESHOLD and r_vis_min >= MIN_VISIBILITY_THRESHOLD:
+            self.active_side = "RIGHT"
+            self.prev_elbow_angle = None
+
+        if self.active_side == "RIGHT":
+            active_ear = r_ear
+            active_shoulder, active_elbow, active_wrist, active_hip = r_core
+            active_knee, active_ankle = r_knee, r_ankle
+        else:
+            active_ear = l_ear
+            active_shoulder, active_elbow, active_wrist, active_hip = l_core
+            active_knee, active_ankle = l_knee, l_ankle
+
+        # Core Side-View Kinematics
         elbow_angle = calculate_angle(active_shoulder, active_elbow, active_wrist)
+        torso_height = max(abs(active_shoulder.y - active_hip.y), 0.20)
+        raw_shoulder_span = abs(l_shoulder.x - r_shoulder.x)
+        shoulder_span_ratio = raw_shoulder_span / torso_height
+        is_facing_side = shoulder_span_ratio <= SETUP_MAX_SIDE_SPAN_RATIO
 
-        torso_len = max(np.hypot(active_shoulder.x - active_hip.x, active_shoulder.y - active_hip.y), 0.35)
-        dx_torso = abs(active_shoulder.x - active_hip.x)
-        dy_torso = max(abs(active_shoulder.y - active_hip.y), 0.10)
-        torso_tilt = np.degrees(np.arctan2(dx_torso, dy_torso))
+        # Facing Direction (verifies elbows bend BEHIND torso, not forward in front)
+        nose_offset_ratio = (nose.x - active_shoulder.x) / torso_height
+        facing_known = nose.visibility >= MIN_VISIBILITY_THRESHOLD and abs(nose_offset_ratio) >= MIN_FACING_NOSE_OFFSET
+        facing_dir = 1.0 if nose_offset_ratio >= 0 else -1.0
+        elbow_forward_ratio = ((active_elbow.x - active_shoulder.x) * facing_dir) / torso_height if facing_known else 0.0
 
-        # 2. Strict Side Profile Verification (16:9 Webcam Calibrated)
-        shoulder_aspect = abs(l_shoulder.x - r_shoulder.x) / torso_len
-        hip_aspect = abs(l_hip.x - r_hip.x) / torso_len
-        is_side = (shoulder_aspect < SETUP_MAX_SHOULDER_SPAN_RATIO) and (hip_aspect < SETUP_MAX_HIP_SPAN_RATIO)
+        # Horizontal hip distance from planted hands
+        hip_drift_ratio = abs(active_hip.x - active_wrist.x) / torso_height
 
-        # 3. Step 1 & 2: Normalized Bench-Dip Base Verification (Hands on bench next to hips, legs forward)
-        hands_next_to_hips = (abs(active_wrist.y - active_hip.y) / torso_len) <= SETUP_MAX_HIP_WRIST_Y_RATIO
-        if active_knee.visibility > 0.40:
-            is_bench_hover_posture = (
-                (abs(active_knee.x - active_hip.x) > (0.20 * torso_len))
-                and (active_shoulder.y < active_hip.y)
-            )
-        else:
-            is_bench_hover_posture = (active_shoulder.y < active_hip.y)
+        # Torso lean angle from vertical (catches hunched chest / excessive lean)
+        torso_dy = max(abs(active_hip.y - active_shoulder.y), 1e-6)
+        torso_dx = abs(active_shoulder.x - active_hip.x)
+        torso_lean_deg = math.degrees(math.atan2(torso_dx, torso_dy))
 
-        # 4. Step 3 & 4: Packed Shoulders, Spine-to-Bench Distance & True Sagittal Backward Elbow Point
-        ear_shoulder_dist = abs(active_ear.y - active_shoulder.y)
-        neck_ratio = ear_shoulder_dist / torso_len
+        # Signed vertical neck distance (shoulder.y - ear.y > 0 normally; <= 0 when deeply shrugged)
+        ear_visible = active_ear.visibility >= MIN_VISIBILITY_THRESHOLD
+        neck_ratio = ((active_shoulder.y - active_ear.y) / torso_height) if ear_visible else None
+        head_forward_ratio = (abs(active_ear.x - active_shoulder.x) / torso_height) if ear_visible else 0.0
 
-        bench_anchor_x = self.baseline_wrist_x if self.baseline_wrist_x is not None else active_wrist.x
-        hip_bench_drift_ratio = abs(active_hip.x - bench_anchor_x) / torso_len
+        # Wide / Chicken-Wing Elbow Flare Kinematics
+        # At top (vertical) and proper bottom (horizontal back), upper arm stays in side plane.
+        # Flaring elbows laterally toward/away from camera foreshortens 2D upper-arm length.
+        upper_arm_len_2d = math.hypot(active_shoulder.x - active_elbow.x, active_shoulder.y - active_elbow.y)
+        upper_arm_ratio = upper_arm_len_2d / torso_height
+        both_elbows_visible = min(l_elbow.visibility, r_elbow.visibility) >= 0.45
+        elbow_spread_ratio = 0.0
+        if both_elbows_visible and shoulder_span_ratio >= ELBOW_SPREAD_CHECK_MIN_SPAN:
+            elbow_spread_ratio = abs(l_elbow.x - r_elbow.x) / max(raw_shoulder_span, 0.10)
 
-        # True Sagittal Elbow Direction Check:
-        # In side view, the elbow must bend BACKWARD (opposite the direction of the nose/knees)
-        facing_right = (active_knee.x > active_hip.x) if active_knee.visibility > 0.40 else (nose.x > active_ear.x)
-        if facing_right:
-            # Facing right (+X): Behind the shoulder is toward -X
-            elbow_backward_ratio = (active_shoulder.x - active_elbow.x) / torso_len
-        else:
-            # Facing left (-X): Behind the shoulder is toward +X
-            elbow_backward_ratio = (active_elbow.x - active_shoulder.x) / torso_len
+        # Excessive Depth Check (shoulder dropping below elbow strains anterior shoulder capsule)
+        shoulder_below_elbow_ratio = (active_shoulder.y - active_elbow.y) / torso_height
 
-        is_elbow_pointing_back = elbow_backward_ratio >= MIN_ELBOW_BACKWARD_RATIO
-
-        # ---------------------------------------------------------
-        # 1. SETUP GUARD (Step 1-3: Side View, Hands on Bench Next to Hips, Arms Locked)
-        # ---------------------------------------------------------
-        is_setup_ready = (
-            is_side
-            and is_bench_hover_posture
-            and hands_next_to_hips
-            and (elbow_angle >= SETUP_ELBOW_MIN_ANGLE)
-            and (torso_tilt <= SETUP_TORSO_VERTICAL_MAX)
+        # Wrist anchor / body descent checks
+        hands_below_shoulders = (active_wrist.y - active_shoulder.y) / torso_height >= SETUP_MIN_WRIST_BELOW_SHOULDER
+        wrist_lift_ratio = (
+            (self.baseline_wrist_y - active_wrist.y) / torso_height
+            if self.baseline_wrist_y is not None else 0.0
+        )
+        wrist_shift_abs_ratio = abs(wrist_lift_ratio)
+        shoulder_drop_ratio = (
+            (active_shoulder.y - self.baseline_shoulder_y) / torso_height
+            if self.baseline_shoulder_y is not None else 0.0
         )
 
-        if is_setup_ready:
-            self.ready_frames += 1
-            if self.baseline_neck_ratio is None:
-                self.baseline_neck_ratio = neck_ratio
-                self.baseline_shoulder_y = active_shoulder.y
-                self.baseline_hip_y = active_hip.y
-                self.baseline_wrist_x = active_wrist.x
-            elif not self.rep_started and elbow_angle >= 150.0:
-                self.baseline_neck_ratio = 0.92 * self.baseline_neck_ratio + 0.08 * neck_ratio
-                self.baseline_shoulder_y = 0.92 * self.baseline_shoulder_y + 0.08 * active_shoulder.y
-                self.baseline_hip_y = 0.92 * self.baseline_hip_y + 0.08 * active_hip.y
-                self.baseline_wrist_x = 0.92 * self.baseline_wrist_x + 0.08 * active_wrist.x
+        # Optional leg-drive advisory when lower body is in frame
+        has_legs = active_knee.visibility >= MIN_VISIBILITY_THRESHOLD and active_ankle.visibility >= MIN_VISIBILITY_THRESHOLD
+        current_knee_angle = calculate_angle(active_hip, active_knee, active_ankle) if has_legs else None
 
-            if self.ready_frames > SETUP_MIN_READY_FRAMES:
+        # ---------------------------------------------------------
+        # 1. SETUP GUARD (Side View + Straight Arms Planted on Chair)
+        # ---------------------------------------------------------
+        is_resting_setup = (
+            is_facing_side
+            and hands_below_shoulders
+            and (elbow_angle >= SETUP_MIN_ELBOW_ANGLE)
+            and (hip_drift_ratio <= SETUP_MAX_HIP_DRIFT_RATIO)
+            and (torso_lean_deg <= SETUP_MAX_TORSO_LEAN_DEG)
+        )
+
+        if is_resting_setup:
+            self.setup_frames += 1
+            if not self.rep_started:
+                if neck_ratio is not None and neck_ratio > 0.05:
+                    if self.baseline_neck_ratio is None:
+                        self.baseline_neck_ratio = neck_ratio
+                    else:
+                        self.baseline_neck_ratio = 0.90 * self.baseline_neck_ratio + 0.10 * neck_ratio
+
+                if self.baseline_upper_arm_ratio is None:
+                    self.baseline_upper_arm_ratio = upper_arm_ratio
+                else:
+                    self.baseline_upper_arm_ratio = 0.90 * self.baseline_upper_arm_ratio + 0.10 * upper_arm_ratio
+
+                if self.baseline_wrist_y is None or self.state in ("WAITING", "LOCKED_FAULT"):
+                    self.baseline_wrist_y = (
+                        active_wrist.y if self.baseline_wrist_y is None
+                        else 0.90 * self.baseline_wrist_y + 0.10 * active_wrist.y
+                    )
+                    self.baseline_shoulder_y = (
+                        active_shoulder.y if self.baseline_shoulder_y is None
+                        else 0.90 * self.baseline_shoulder_y + 0.10 * active_shoulder.y
+                    )
+                elif wrist_shift_abs_ratio < 0.12:
+                    self.baseline_wrist_y = 0.95 * self.baseline_wrist_y + 0.05 * active_wrist.y
+                    self.baseline_shoulder_y = 0.95 * self.baseline_shoulder_y + 0.05 * active_shoulder.y
+
+                if current_knee_angle is not None:
+                    if self.baseline_knee_angle is None:
+                        self.baseline_knee_angle = current_knee_angle
+                    else:
+                        self.baseline_knee_angle = 0.90 * self.baseline_knee_angle + 0.10 * current_knee_angle
+
+            if self.setup_frames > SETUP_MIN_READY_FRAMES:
                 self.is_ready = True
         else:
-            self.ready_frames = max(0, self.ready_frames - 1)
+            self.setup_frames = max(0, self.setup_frames - 1)
 
         if not self.is_ready and self.state != "LOCKED_FAULT":
             self.state = "WAITING"
             self.frame_buffer.clear()
-            if not is_side:
-                feedback_msg = "Turn sideways to camera (strict side view required)"
-            elif not is_bench_hover_posture:
-                feedback_msg = "Sit on edge of bench and extend feet forward"
-            elif torso_tilt > SETUP_TORSO_VERTICAL_MAX:
-                feedback_msg = "Keep torso upright close to the edge of the bench"
+            if not is_facing_side:
+                feedback_msg = "Turn sideways to the camera (side view required)"
+            elif not hands_below_shoulders:
+                feedback_msg = "Place your hands firmly on the chair edge behind you"
+            elif hip_drift_ratio > SETUP_MAX_HIP_DRIFT_RATIO:
+                feedback_msg = "Scoot your hips closer to the chair/bench"
+            elif torso_lean_deg > SETUP_MAX_TORSO_LEAN_DEG:
+                feedback_msg = "Sit tall with your torso upright to begin"
             else:
-                feedback_msg = "Place hands on bench next to hips and lock arms out to start"
+                feedback_msg = "Press your arms straight at the top to begin"
             return {
-                "exercise": "Tricep Dips", "state": self.state,
+                "exercise": "Triceps Dips", "state": self.state,
                 "good_reps": self.good_reps, "bad_reps": self.bad_reps,
                 "half_reps": self.half_reps, "total_reps": total_reps,
                 "form_score": 0, "feedback": feedback_msg,
-                "elbow_angle": round(elbow_angle, 1), "depth_reached": False
+                "elbow_angle": round(elbow_angle, 1),
+                "hip_drift": round(hip_drift_ratio, 2),
+                "torso_lean": round(torso_lean_deg, 1)
             }
 
         # ---------------------------------------------------------
@@ -290,180 +418,302 @@ class TricepDipsTracker:
                 seq = np.expand_dims(np.array(self.frame_buffer, dtype=np.float32), axis=0)
                 self.interpreter.set_tensor(self.input_details[0]['index'], seq)
                 self.interpreter.invoke()
-                out = self.interpreter.get_tensor(self.output_details[0]['index'])[0]
+                output_data = self.interpreter.get_tensor(self.output_details[0]['index'])[0]
 
-                exp_scores = np.exp(out - np.max(out))
-                probs = exp_scores / np.sum(exp_scores)
-                bad_posture_prob = probs[0]
+                exp_vals = np.exp(output_data - np.max(output_data))
+                probs = exp_vals / np.sum(exp_vals)
 
-                if bad_posture_prob >= ML_FAULT_CONFIDENCE_THRESHOLD and self.state not in ["TOP", "WAITING", "LOCKED_FAULT"]:
-                    self.ml_fault_frames += 1
-                    if self.ml_fault_frames >= DEBOUNCE_ML_FAULT:
+                if probs[0] >= ML_FAULT_CONFIDENCE_THRESHOLD and self.state in ["DESCENDING", "BOTTOM", "ASCENDING"]:
+                    self.ml_bad_frames += 1
+                    if self.ml_bad_frames >= DEBOUNCE_ML_FAULT:
                         if self.ml_posture_maintained:
-                            print(
-                                f"[TRICEP DIPS FAULT] AI ST-GCN flagged shoulder/posture fault: prob={bad_posture_prob:.2f}",
-                                flush=True,
-                            )
+                            print(f"[TRICEPS DIPS FAULT] AI ST-GCN flagged posture fault: prob={probs[0]:.2f}", flush=True)
                         self.ml_posture_maintained = False
                 else:
-                    self.ml_fault_frames = max(0, self.ml_fault_frames - 1)
+                    self.ml_bad_frames = max(0, self.ml_bad_frames - 1)
             except Exception:
                 pass
 
         # ---------------------------------------------------------
-        # 3. KINEMATIC FORM TRIPWIRES
+        # 3. KINEMATIC TRIPWIRES (SIDE VIEW)
         # ---------------------------------------------------------
         if self.rep_started and self.state in ["DESCENDING", "BOTTOM", "ASCENDING"]:
             self.min_elbow_angle = min(self.min_elbow_angle, elbow_angle)
-            if self.baseline_shoulder_y is not None and self.baseline_hip_y is not None:
-                shoulder_drop_ratio = max(0.0, (active_shoulder.y - self.baseline_shoulder_y) / torso_len)
-                hip_drop_ratio = max(0.0, (active_hip.y - self.baseline_hip_y) / torso_len)
-                self.max_shoulder_drop_ratio = max(self.max_shoulder_drop_ratio, shoulder_drop_ratio)
-                self.max_hip_drop_ratio = max(self.max_hip_drop_ratio, hip_drop_ratio)
+            self.max_hip_drift = max(self.max_hip_drift, hip_drift_ratio)
+            self.max_torso_lean = max(self.max_torso_lean, torso_lean_deg)
+            self.min_upper_arm_ratio = min(self.min_upper_arm_ratio, upper_arm_ratio)
 
-            # A. Strict Side View Check
-            if not is_side:
-                self.profile_frames += 1
-                if self.profile_frames >= DEBOUNCE_PROFILE:
+            if not is_facing_side:
+                self.side_frames += 1
+                if self.side_frames >= DEBOUNCE_SIDE:
                     if self.is_side_view:
-                        print(f"[TRICEP DIPS FAULT] Lost side view: ratio={shoulder_aspect:.2f}", flush=True)
+                        print(f"[TRICEPS DIPS FAULT] Lost side view: ratio={shoulder_span_ratio:.2f}", flush=True)
                     self.is_side_view = False
             else:
-                self.profile_frames = max(0, self.profile_frames - 1)
+                self.side_frames = max(0, self.side_frames - 1)
 
-            # B. Step 3: Keep Torso Upright
-            if torso_tilt > MAX_TORSO_TILT_ACTIVE:
-                self.torso_frames += 1
-                if self.torso_frames >= DEBOUNCE_TORSO:
-                    if self.torso_upright:
-                        print(f"[TRICEP DIPS FAULT] Torso leaned forward: tilt={torso_tilt:.1f}°", flush=True)
-                    self.torso_upright = False
+            # A. Hands Planted Check (Prevents standing curls / lifting hands off chair)
+            if wrist_lift_ratio > MAX_WRIST_LIFT_DURING_REP:
+                self.hand_lift_frames += 1
+                if self.hand_lift_frames >= DEBOUNCE_HAND_LIFT:
+                    if self.hands_planted:
+                        print(f"[TRICEPS DIPS FAULT] Wrists lifted off chair: lift={wrist_lift_ratio:.2f}", flush=True)
+                    self.hands_planted = False
             else:
-                self.torso_frames = max(0, self.torso_frames - 1)
+                self.hand_lift_frames = max(0, self.hand_lift_frames - 1)
 
-            # C. Step 3: Keep Spine Close to the Edge of the Bench
-            if hip_bench_drift_ratio > MAX_HIP_BENCH_DRIFT_RATIO:
-                self.hip_drift_frames += 1
-                if self.hip_drift_frames >= DEBOUNCE_HIP_DRIFT:
-                    if self.spine_close_to_bench:
+            # B. Backward-Elbow Path Check (Catches unsigned-angle forward-arm crouch/curl)
+            if facing_known and elbow_angle < 125.0 and elbow_forward_ratio > MAX_ELBOW_FORWARD_RATIO:
+                self.elbow_fwd_frames += 1
+                if self.elbow_fwd_frames >= DEBOUNCE_ELBOW_FORWARD:
+                    if self.elbows_behind_torso:
                         print(
-                            f"[TRICEP DIPS FAULT] Hips drifted too far forward from bench: ratio={hip_bench_drift_ratio:.2f}",
+                            f"[TRICEPS DIPS FAULT] Elbows bent forward in front of torso! "
+                            f"elbow_fwd={elbow_forward_ratio:.2f}, elbow={elbow_angle:.1f}°",
                             flush=True,
                         )
-                    self.spine_close_to_bench = False
+                    self.elbows_behind_torso = False
             else:
-                self.hip_drift_frames = max(0, self.hip_drift_frames - 1)
+                self.elbow_fwd_frames = max(0, self.elbow_fwd_frames - 1)
 
-            # D. Step 3: Roll Shoulders Back and Down (Anti-Shrug / Anti-Dump)
-            if self.baseline_neck_ratio and neck_ratio < (self.baseline_neck_ratio * SHRUG_NECK_RATIO_FACTOR):
-                self.shoulder_dump_frames += 1
-                if self.shoulder_dump_frames >= DEBOUNCE_SHOULDER_DUMP:
-                    if self.shoulders_packed:
-                        print("[TRICEP DIPS FAULT] Shoulders shrugged/dumped into ears!", flush=True)
-                    self.shoulders_packed = False
+            # C. Hip Drift (Hips pushing too far forward from chair)
+            if hip_drift_ratio > MAX_HIP_DRIFT_RATIO:
+                self.drift_frames += 1
+                if self.drift_frames >= DEBOUNCE_HIP_DRIFT:
+                    if self.hips_close:
+                        print(f"[TRICEPS DIPS FAULT] Hips drifted too far forward: ratio={hip_drift_ratio:.2f}", flush=True)
+                    self.hips_close = False
+                    if self.post_rep_timer == 0:
+                        self.current_feedback = "Keep your hips close to the chair!"
             else:
-                self.shoulder_dump_frames = max(0, self.shoulder_dump_frames - 1)
+                self.drift_frames = max(0, self.drift_frames - 1)
 
-            # E. Step 4: Keep Elbows Pointing Straight Backward (Sagittal Direction Check)
-            if elbow_angle < 125.0 and not is_elbow_pointing_back:
+            if ADVISORY_HIP_DRIFT_RATIO < hip_drift_ratio <= MAX_HIP_DRIFT_RATIO:
+                self.mild_drift_frames += 1
+                if self.mild_drift_frames >= 4:
+                    self.mild_drift_warning = True
+            else:
+                self.mild_drift_frames = max(0, self.mild_drift_frames - 1)
+
+            # D. Shoulder Sinking / Shrugging (Relative drop + absolute floor if user started slumped)
+            if neck_ratio is not None:
+                below_relative = (
+                    self.baseline_neck_ratio is not None
+                    and neck_ratio < (self.baseline_neck_ratio * SHRUG_NECK_RATIO_FACTOR)
+                )
+                below_absolute = neck_ratio < MIN_ABSOLUTE_NECK_RATIO
+                if below_relative or below_absolute:
+                    self.shrug_frames += 1
+                    if self.shrug_frames >= DEBOUNCE_SHRUG:
+                        if self.shoulders_depressed:
+                            print(
+                                f"[TRICEPS DIPS FAULT] Shoulders sank/shrugged: "
+                                f"neck={neck_ratio:.2f} vs base={self.baseline_neck_ratio or 0:.2f}",
+                                flush=True,
+                            )
+                        self.shoulders_depressed = False
+                        if self.post_rep_timer == 0:
+                            self.current_feedback = "Push shoulders down away from your ears!"
+                else:
+                    self.shrug_frames = max(0, self.shrug_frames - 1)
+            else:
+                self.shrug_frames = max(0, self.shrug_frames - 1)
+
+            # E. Excessive Depth / Bottoming Out (Anterior Shoulder Strain Risk)
+            is_too_deep = (
+                (elbow_angle < MIN_SAFE_ELBOW_ANGLE)
+                or (shoulder_below_elbow_ratio > MAX_SHOULDER_BELOW_ELBOW_RATIO)
+            )
+            if is_too_deep:
+                self.over_depth_frames += 1
+                if self.over_depth_frames >= DEBOUNCE_OVER_DEPTH:
+                    if self.safe_depth:
+                        print(
+                            f"[TRICEPS DIPS FAULT] Dipped too deep! "
+                            f"elbow={elbow_angle:.1f}°, sh_below_el={shoulder_below_elbow_ratio:.2f}",
+                            flush=True,
+                        )
+                    self.safe_depth = False
+                    if self.post_rep_timer == 0:
+                        self.current_feedback = "Too deep! Stop around 90 degrees to protect shoulders."
+            else:
+                self.over_depth_frames = max(0, self.over_depth_frames - 1)
+
+            # F. Wide / Chicken-Wing Elbow Flare (Elbows flaring out instead of pointing back)
+            shrunk_from_baseline = (
+                self.baseline_upper_arm_ratio is not None
+                and upper_arm_ratio < (self.baseline_upper_arm_ratio * FLARE_UPPER_ARM_SHRINK_FACTOR)
+            )
+            is_elbow_flaring = (
+                (upper_arm_ratio < MIN_UPPER_ARM_RATIO)
+                or shrunk_from_baseline
+                or (elbow_spread_ratio > MAX_ELBOW_SPREAD_TO_SHOULDER)
+            )
+            if is_elbow_flaring and elbow_angle < 130.0:
                 self.flare_frames += 1
-                if self.flare_frames >= DEBOUNCE_ELBOW_DIR:
-                    if self.elbows_pointed_back:
+                if self.flare_frames >= DEBOUNCE_ELBOW_FLARE:
+                    if self.elbows_tucked:
                         print(
-                            f"[TRICEP DIPS FAULT] Elbows did not point backward: back_ratio={elbow_backward_ratio:.2f}",
+                            f"[TRICEPS DIPS FAULT] Elbows flared out wide! "
+                            f"arm_ratio={upper_arm_ratio:.2f} (base={self.baseline_upper_arm_ratio or 0:.2f}), "
+                            f"spread={elbow_spread_ratio:.2f}",
                             flush=True,
                         )
-                    self.elbows_pointed_back = False
+                    self.elbows_tucked = False
+                    if self.post_rep_timer == 0:
+                        self.current_feedback = "Point elbows straight back, do not flare out!"
             else:
                 self.flare_frames = max(0, self.flare_frames - 1)
 
+            # G. Excessive Torso Lean / Forward Hunch
+            if torso_lean_deg > MAX_TORSO_LEAN_DEG:
+                self.lean_frames += 1
+                if self.lean_frames >= DEBOUNCE_TORSO_LEAN:
+                    if self.torso_upright:
+                        print(f"[TRICEPS DIPS FAULT] Excessive torso lean/hunch: angle={torso_lean_deg:.1f}°", flush=True)
+                    self.torso_upright = False
+            else:
+                self.lean_frames = max(0, self.lean_frames - 1)
+
+            if ADVISORY_TORSO_LEAN_DEG < torso_lean_deg <= MAX_TORSO_LEAN_DEG:
+                self.mild_lean_frames += 1
+                if self.mild_lean_frames >= 5:
+                    self.mild_lean_warning = True
+            else:
+                self.mild_lean_frames = max(0, self.mild_lean_frames - 1)
+
+            # H. Forward Head / Chin-to-Chest Advisory
+            if head_forward_ratio > ADVISORY_HEAD_FORWARD_RATIO:
+                self.head_frames += 1
+                if self.head_frames >= 5:
+                    self.head_forward_warning = True
+            else:
+                self.head_frames = max(0, self.head_frames - 1)
+
+            # I. Leg Drive / Knee Kick Advisory (Extending knees past baseline or fast snap on ascent)
+            if current_knee_angle is not None and self.state == "ASCENDING":
+                pushed_past_base = (
+                    self.baseline_knee_angle is not None
+                    and (current_knee_angle - self.baseline_knee_angle) > ADVISORY_KNEE_EXTEND_DELTA
+                )
+                fast_knee_kick = (
+                    self.prev_knee_angle is not None
+                    and (current_knee_angle - self.prev_knee_angle) > ADVISORY_KNEE_KICK_SPEED
+                )
+                if pushed_past_base or fast_knee_kick:
+                    self.leg_frames += 1
+                    if self.leg_frames >= 3:
+                        self.leg_drive_warning = True
+                else:
+                    self.leg_frames = max(0, self.leg_frames - 1)
+                self.prev_knee_angle = current_knee_angle
+            else:
+                self.prev_knee_angle = current_knee_angle
+
         # ---------------------------------------------------------
-        # 4. STATE MACHINE (FIXED TOP -> DESCENDING -> BOTTOM -> ASCENDING FLOW)
+        # 4. STATE MACHINE
         # ---------------------------------------------------------
         if self.state == "LOCKED_FAULT":
-            if is_setup_ready:
+            if is_resting_setup:
                 self.unlock_frames += 1
                 if self.unlock_frames >= UNLOCK_RESET_FRAMES:
-                    self.state = "TOP"
+                    self.state = "RESTING"
                     self.unlock_frames = 0
                     self._reset_rep_tracking()
-                    self.current_feedback = "Reset complete! Roll shoulders down and dip to 90°."
+                    self.current_feedback = "Reset complete! Lower your hips straight down."
             else:
                 self.unlock_frames = 0
 
             return {
-                "exercise": "Tricep Dips", "state": self.state,
+                "exercise": "Triceps Dips", "state": self.state,
                 "good_reps": self.good_reps, "bad_reps": self.bad_reps,
                 "half_reps": self.half_reps, "total_reps": total_reps,
                 "form_score": 0, "feedback": self.current_feedback,
-                "elbow_angle": round(elbow_angle, 1), "depth_reached": False
+                "elbow_angle": round(elbow_angle, 1),
+                "hip_drift": round(hip_drift_ratio, 2),
+                "torso_lean": round(torso_lean_deg, 1)
             }
 
         if self.state == "WAITING" and self.is_ready:
-            self.state = "TOP"
+            self.state = "RESTING"
+            self.rest_exit_frames = 0
             if self.post_rep_timer == 0:
-                self.current_feedback = "Keep spine close to bench and bend elbows to 90°!"
+                self.current_feedback = "Lower slowly straight down along the chair!"
 
-        # Step 4: Initiate Lowering (ONLY from TOP so ASCENDING never ping-pongs!)
-        elif self.state == "TOP" and elbow_angle <= DESCENDING_START_ELBOW_ANGLE:
-            self.state = "DESCENDING"
-            self.rep_started = True
-            self.min_elbow_angle = elbow_angle
-            self.max_shoulder_drop_ratio = 0.0
-            self.max_hip_drop_ratio = 0.0
-            self.half_rep_frames = 0
-            if self.post_rep_timer == 0:
-                self.current_feedback = "Lower hips until upper arms are parallel to the floor (~90°)..."
+        elif self.state == "RESTING":
+            # Graceful set-break / height-change exit: standing up OR sitting down onto a new height resets cleanly
+            if wrist_shift_abs_ratio > REST_EXIT_WRIST_SHIFT_RATIO or not hands_below_shoulders:
+                self.rest_exit_frames += 1
+                if self.rest_exit_frames >= REST_EXIT_FRAMES:
+                    self.state = "WAITING"
+                    self.is_ready = False
+                    self.setup_frames = 0
+                    self.rest_exit_frames = 0
+                    self.baseline_wrist_y = None
+                    self.baseline_shoulder_y = None
+                    self._reset_rep_tracking()
+                    self.current_feedback = "Position changed. Place hands on chair and straighten arms to resume."
+            else:
+                self.rest_exit_frames = 0
+                if elbow_angle < DESCENDING_START_ANGLE and wrist_lift_ratio <= MAX_WRIST_LIFT_DURING_REP:
+                    self.state = "DESCENDING"
+                    self.rep_started = True
+                    self.min_elbow_angle = elbow_angle
+                    self.max_hip_drift = hip_drift_ratio
+                    self.max_torso_lean = torso_lean_deg
+                    self.min_upper_arm_ratio = upper_arm_ratio
+                    self.reversal_frames = 0
+                    if self.post_rep_timer == 0:
+                        self.current_feedback = "Lower under control, elbows straight back..."
 
-        # Step 4 Complete: Upper arms parallel to floor (elbow <= 98° AND both hips & shoulders lowered)
-        elif (
-            self.state == "DESCENDING"
-            and elbow_angle <= FULL_DEPTH_MAX_ELBOW_ANGLE
-            and self.max_shoulder_drop_ratio >= MIN_BODY_DIP_DROP_RATIO
-            and self.max_hip_drop_ratio >= MIN_BODY_DIP_DROP_RATIO
-        ):
+        elif self.state == "DESCENDING" and elbow_angle <= BOTTOM_TARGET_ANGLE and shoulder_drop_ratio >= MIN_SHOULDER_DROP_FOR_DEPTH:
             self.depth_reached = True
-            self.half_rep_frames = 0
             self.state = "BOTTOM"
+            self.reversal_frames = 0
             if self.post_rep_timer == 0:
-                self.current_feedback = "90° parallel depth reached! Drive firmly through your palms."
+                self.current_feedback = "Good depth! Press back up smoothly."
 
-        # Step 5: Drive Upward from BOTTOM
-        elif self.state == "BOTTOM" and elbow_angle > ASCENDING_START_ELBOW_ANGLE:
+        elif self.state == "DESCENDING" and not self.depth_reached and (
+            (elbow_angle - self.min_elbow_angle) > EARLY_REVERSAL_DELTA
+        ):
+            self.reversal_frames += 1
+            if self.reversal_frames >= DEBOUNCE_HALF_REP:
+                self.half_dip_reached = True
+                self.state = "ASCENDING"
+                self.current_feedback = "Half rep: Pressing up too early..."
+                print(f"[TRICEPS DIPS FAULT] Early reversal: min_elbow={self.min_elbow_angle:.1f}°", flush=True)
+
+        elif self.state == "BOTTOM" and elbow_angle > ASCENDING_START_ANGLE:
             self.state = "ASCENDING"
             if self.post_rep_timer == 0:
-                self.current_feedback = "Contract triceps and lock out completely at the top!"
+                self.current_feedback = "Drive up through your palms..."
 
-        # Premature Reversal (Half Rep Branch: Pushing up before reaching 90° parallel depth)
-        elif self.state == "DESCENDING" and not self.depth_reached and (elbow_angle - self.min_elbow_angle) > EARLY_ASCENT_DELTA:
-            self.half_rep_frames += 1
-            if self.half_rep_frames >= DEBOUNCE_HALF_REP:
-                if self.min_elbow_angle <= HALF_DIP_MAX_ELBOW_ANGLE:
-                    self.was_half_rep = True
-                self.state = "ASCENDING"
-                self.current_feedback = "Incomplete depth! Pushing up early..."
-                print(
-                    f"[TRICEP DIPS FAULT] Early reversal before 90° depth: min_elbow={self.min_elbow_angle:.1f}° "
-                    f"(required<={FULL_DEPTH_MAX_ELBOW_ANGLE}°)",
-                    flush=True,
-                )
-        else:
-            if self.state == "DESCENDING":
-                self.half_rep_frames = max(0, self.half_rep_frames - 1)
+        # Allow recovery from brief fatigue tremor on descent if user still completes full depth
+        elif (
+            self.state == "ASCENDING"
+            and not self.depth_reached
+            and elbow_angle <= BOTTOM_TARGET_ANGLE
+            and shoulder_drop_ratio >= MIN_SHOULDER_DROP_FOR_DEPTH
+        ):
+            self.depth_reached = True
+            self.half_dip_reached = False
+            self.state = "BOTTOM"
+            self.reversal_frames = 0
+            if self.post_rep_timer == 0:
+                self.current_feedback = "Good depth! Press back up smoothly."
 
-        # Step 4: Eccentric drop speed detector
-        if self.rep_started and self.state in ["DESCENDING", "ASCENDING"]:
+        if self.state == "DESCENDING" and not ((elbow_angle - self.min_elbow_angle) > EARLY_REVERSAL_DELTA):
+            self.reversal_frames = max(0, self.reversal_frames - 1)
+
+        # Debounced Eccentric Free-Fall Monitor (Dropping too fast into bottom)
+        if self.rep_started and self.state == "DESCENDING":
             if self.prev_elbow_angle is not None:
                 drop_speed = self.prev_elbow_angle - elbow_angle
                 if drop_speed > ECCENTRIC_DROP_SPEED_MAX:
                     self.drop_frames += 1
                     if self.drop_frames >= DEBOUNCE_DROP:
                         if self.controlled_descent:
-                            print(
-                                f"[TRICEP DIPS FAULT] Dropped too fast: speed={drop_speed:.1f} deg/frame "
-                                f"(max={ECCENTRIC_DROP_SPEED_MAX})",
-                                flush=True,
-                            )
+                            print(f"[TRICEPS DIPS FAULT] Uncontrolled drop speed: {drop_speed:.1f} deg/frame", flush=True)
                         self.controlled_descent = False
                 else:
                     self.drop_frames = max(0, self.drop_frames - 1)
@@ -472,63 +722,72 @@ class TricepDipsTracker:
             self.prev_elbow_angle = None
 
         # ---------------------------------------------------------
-        # 5. REP COMPLETION & EVALUATION (HALF REPS FLAGGED AS BAD REPS)
+        # 5. REP COMPLETION & EVALUATION
         # ---------------------------------------------------------
-        if self.rep_started and self.state in ["ASCENDING", "BOTTOM", "DESCENDING"] and elbow_angle >= REP_COMPLETE_ELBOW_ANGLE:
-            # Ignore minor seated weight shifts (> 128°)
-            if self.min_elbow_angle > MIN_VALID_REP_FLEXION_ANGLE and self.is_side_view and self.shoulders_packed:
+        if self.rep_started and self.state in ["ASCENDING", "BOTTOM", "DESCENDING"] and elbow_angle >= REP_COMPLETE_ANGLE:
+            # Ignore minor resting twitches at the top
+            if (
+                self.min_elbow_angle > MIN_VALID_REP_ELBOW_ANGLE
+                and not self.depth_reached
+                and self.is_side_view
+                and self.hands_planted
+                and self.elbows_behind_torso
+            ):
                 self._reset_rep_tracking()
-                self.state = "TOP"
+                self.state = "RESTING"
                 return {
-                    "exercise": "Tricep Dips", "state": self.state,
+                    "exercise": "Triceps Dips", "state": self.state,
                     "good_reps": self.good_reps, "bad_reps": self.bad_reps,
                     "half_reps": self.half_reps, "total_reps": total_reps,
                     "form_score": 100, "feedback": self.current_feedback,
-                    "elbow_angle": round(elbow_angle, 1), "depth_reached": False
+                    "elbow_angle": round(elbow_angle, 1),
+                    "hip_drift": round(hip_drift_ratio, 2),
+                    "torso_lean": round(torso_lean_deg, 1)
                 }
 
             is_bad_rep = False
 
             if not self.is_side_view:
-                self.current_feedback = "Bad rep: Stay sideways to the camera! Lock out on bench to reset."
+                self.current_feedback = "Bad rep: Keep a side profile to the camera! Hold top to reset."
                 is_bad_rep = True
-            elif not self.shoulders_packed:
-                self.current_feedback = "Bad rep: Roll your shoulders back and down! Do not shrug into your ears."
+            elif not self.hands_planted:
+                self.current_feedback = "Bad rep: Keep hands planted on the chair and lower your body!"
                 is_bad_rep = True
-            elif not self.spine_close_to_bench:
-                self.current_feedback = "Bad rep: Keep your spine and hips close to the edge of the bench!"
+            elif not self.elbows_behind_torso:
+                self.current_feedback = "Bad rep: Bend elbows backward behind your body, not forward!"
                 is_bad_rep = True
-            elif not self.elbows_pointed_back:
-                self.current_feedback = "Bad rep: Keep your elbows pointing straight backward! Do not flare out."
+            elif not self.safe_depth:
+                self.current_feedback = "Bad rep: Dipped too deep! Stop near 90 degrees to protect shoulders."
+                is_bad_rep = True
+            elif not self.elbows_tucked:
+                self.current_feedback = "Bad rep: Elbows flared out wide! Point elbows straight back."
+                is_bad_rep = True
+            elif not self.hips_close:
+                self.current_feedback = "Bad rep: Hips too far forward! Keep your back close to the chair."
+                is_bad_rep = True
+            elif not self.shoulders_depressed:
+                self.current_feedback = "Bad rep: Do not sink into your shoulders! Push shoulders down."
                 is_bad_rep = True
             elif not self.torso_upright:
-                self.current_feedback = "Bad rep: Keep your torso upright! Do not lean excessively forward."
+                self.current_feedback = "Bad rep: Keep your torso upright! Do not hunch forward."
                 is_bad_rep = True
             elif not self.controlled_descent:
-                self.current_feedback = "Bad rep: Lower your body slowly under control! Do not drop."
+                self.current_feedback = "Bad rep: Lower too fast! Control the descent to protect shoulders."
                 is_bad_rep = True
             elif not self.ml_posture_maintained:
-                self.current_feedback = "Bad rep: AI detected shoulder instability or posture breakdown."
+                self.current_feedback = "Bad rep: AI flagged poor dip posture/mechanics."
                 is_bad_rep = True
             elif not self.depth_reached:
-                if self.min_elbow_angle <= FULL_DEPTH_MAX_ELBOW_ANGLE and (
-                    self.max_hip_drop_ratio < MIN_BODY_DIP_DROP_RATIO
-                    or self.max_shoulder_drop_ratio < MIN_BODY_DIP_DROP_RATIO
-                ):
-                    self.current_feedback = "Bad rep: Lower your hips and torso straight down below the bench!"
-                elif self.min_elbow_angle <= HALF_DIP_MAX_ELBOW_ANGLE or self.was_half_rep:
-                    self.current_feedback = "Bad rep: Half rep! Lower until your upper arms are parallel to the floor (90°)."
-                else:
-                    self.current_feedback = "Bad rep: Dip was too shallow! Bend elbows down to 90 degrees."
+                self.current_feedback = "Bad rep: Half rep! Lower deeper until elbows approach 90 degrees."
                 is_bad_rep = True
 
             rep_num = self.good_reps + self.bad_reps + self.half_reps + 1
             if is_bad_rep:
                 self.bad_reps += 1
                 print(
-                    f"[TRICEP DIPS REP #{rep_num} -> BAD REP] "
-                    f"Reason: {self.current_feedback} | min_elbow={self.min_elbow_angle:.1f}°, "
-                    f"shoulder_drop={self.max_shoulder_drop_ratio:.2f}, hip_drop={self.max_hip_drop_ratio:.2f}",
+                    f"[TRICEPS DIPS REP #{rep_num} -> BAD REP] Reason: {self.current_feedback} | "
+                    f"min_elbow={self.min_elbow_angle:.1f}°, max_drift={self.max_hip_drift:.2f}, "
+                    f"max_lean={self.max_torso_lean:.1f}°, min_arm={self.min_upper_arm_ratio:.2f}",
                     flush=True,
                 )
                 self.state = "LOCKED_FAULT"
@@ -536,31 +795,52 @@ class TricepDipsTracker:
                 self._reset_rep_tracking()
             else:
                 self.good_reps += 1
-                self.current_feedback = "Clean Tricep Dip! Great 90° depth, packed shoulders, and full lockout."
+                if self.mild_drift_warning:
+                    self.current_feedback = "Good rep! Reminder: Keep hips grazing close to the chair."
+                elif self.mild_lean_warning:
+                    self.current_feedback = "Good rep! Reminder: Keep chest proud and torso upright."
+                elif self.leg_drive_warning:
+                    self.current_feedback = "Good rep! Reminder: Press with your triceps, avoid pushing with legs."
+                elif self.head_forward_warning:
+                    self.current_feedback = "Good rep! Reminder: Look forward, keep neck neutral."
+                else:
+                    self.current_feedback = "Great Triceps Dip! Clean depth and shoulder control."
                 print(
-                    f"[TRICEP DIPS REP #{rep_num} -> GOOD REP] "
-                    f"min_elbow={self.min_elbow_angle:.1f}°, shoulder_drop={self.max_shoulder_drop_ratio:.2f}, "
-                    f"hip_drop={self.max_hip_drop_ratio:.2f}",
+                    f"[TRICEPS DIPS REP #{rep_num} -> GOOD REP] min_elbow={self.min_elbow_angle:.1f}°, "
+                    f"max_drift={self.max_hip_drift:.2f}, max_lean={self.max_torso_lean:.1f}°",
                     flush=True,
                 )
-                self.state = "TOP"
+                self.state = "RESTING"
                 self._reset_rep_tracking()
 
             self.post_rep_timer = POST_REP_FEEDBACK_FRAMES
 
-        form_score = max(0, min(100, int(100 - abs(elbow_angle - 90) * 0.4))) if self.state != "TOP" else 100
+        # Dynamic Scoring
+        total_reps = self.good_reps + self.bad_reps + self.half_reps
+        if self.state == "RESTING":
+            form_score = 100
+        else:
+            progress = max(0.0, min(1.0, (REP_COMPLETE_ANGLE - elbow_angle) / 50.0))
+            form_score = int(60 + progress * 40)
         if not self.is_side_view: form_score -= 35
-        if not self.shoulders_packed: form_score -= 30
-        if not self.spine_close_to_bench: form_score -= 25
-        if not self.elbows_pointed_back: form_score -= 25
-        if not self.torso_upright: form_score -= 30
-        if not self.controlled_descent: form_score -= 20
-        if not self.ml_posture_maintained: form_score -= 30
-        if not self.depth_reached and self.state == "ASCENDING": form_score -= 25
+        if not self.hands_planted: form_score -= 35
+        if not self.elbows_behind_torso: form_score -= 35
+        if not self.safe_depth: form_score -= 30
+        if not self.elbows_tucked: form_score -= 25
+        if not self.hips_close: form_score -= 25
+        if not self.shoulders_depressed: form_score -= 25
+        if not self.torso_upright: form_score -= 20
+        if not self.controlled_descent: form_score -= 15
+        if self.mild_drift_warning: form_score -= 10
+        if self.mild_lean_warning: form_score -= 10
+        if self.leg_drive_warning: form_score -= 10
+        if self.head_forward_warning: form_score -= 5
+        if not self.ml_posture_maintained: form_score -= 25
+        if not self.depth_reached and self.state == "ASCENDING": form_score -= 35
         form_score = max(0, form_score)
 
         return {
-            "exercise": "Tricep Dips",
+            "exercise": "Triceps Dips",
             "state": self.state,
             "good_reps": self.good_reps,
             "bad_reps": self.bad_reps,
@@ -569,5 +849,6 @@ class TricepDipsTracker:
             "form_score": form_score,
             "feedback": self.current_feedback,
             "elbow_angle": round(elbow_angle, 1),
-            "depth_reached": self.depth_reached
+            "hip_drift": round(hip_drift_ratio, 2),
+            "torso_lean": round(torso_lean_deg, 1)
         }
