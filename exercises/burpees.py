@@ -33,7 +33,7 @@ PUSHUP_HALF_DEPTH_ELBOW_ANGLE = 122.0   # Bending between 102° and 122° flags 
 
 # 3. Form Tripwires (Side View + Hip Sag + Push-Up Elbow Flare + Jump Finish)
 MAX_HIP_SAG_BODY_ANGLE = 130.0          # Hips sinking below shoulder/ankle line (< 130°) flags core sag
-VERTICAL_CHECK_ELBOW_ANGLE = 120.0      # Check shoulder-to-elbow flare when lowered into push-up (<= 120°)
+VERTICAL_CHECK_ELBOW_ANGLE = 120=.0      # Check shoulder-to-elbow flare when lowered into push-up (<= 120°)
 MIN_ELBOW_VERTICAL_DEVIATION_DEG = 35.0 # Below 35° = shoulder & elbow vertically aligned / flared (BAD REP)
 MIN_JUMP_HEIGHT_DELTA = 0.025           # Ankle lift off floor for jump credit
 ASCENT_RECOVERY_VERTICAL_DROP = 0.40    # Torso lifting from floor transitions to ASCENDING
@@ -43,7 +43,7 @@ REP_COMPLETE_HIP_ANGLE = 150.0          # Standing hip extension to finish rep
 # 4. Debounce Frame Thresholds
 DEBOUNCE_PROFILE = 4                    # Frames before flagging lost side profile
 DEBOUNCE_SAG = 3                        # Frames before flagging sagging hips in plank
-DEBOUNCE_ELBOW_VERTICAL = 2             # Fast 2-frame latch when push-up elbows flare under shoulders
+DEBOUNCE_ELBOW_VERTICAL = 4             # Fast 2-frame latch when push-up elbows flare under shoulders
 DEBOUNCE_JUMP = 2                       # Frames required to confirm jump or overhead reach
 
 # 5. Model & Buffer Settings
@@ -95,23 +95,56 @@ class BurpeesTracker:
         # Load TFLite model
         self.interpreter = None
         model_path = os.path.join("models", "tflite", "st_gcn_burpees.tflite")
+        if not os.path.exists(model_path):
+            print(f"[BURPEE ERROR] __init__ model file not found: {model_path}", flush=True)
         if os.path.exists(model_path):
             try:
                 self.interpreter = Interpreter(model_path=model_path)
                 self.interpreter.allocate_tensors()
                 self.input_details = self.interpreter.get_input_details()
                 self.output_details = self.interpreter.get_output_details()
-            except Exception:
+            except Exception as exc:
+                print(
+                    f"[BURPEE ERROR] __init__ model_path={model_path} | error={exc}",
+                    flush=True,
+                )
                 self.interpreter = None
 
     def _extract_body_keypoints(self, landmarks):
-        target_indices = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
-        coords = []
-        for idx in target_indices:
-            coords.append([landmarks[idx].x, landmarks[idx].y, landmarks[idx].z])
-        while len(coords) < 25:
-            coords.append([0.0, 0.0, 0.0])
-        return np.array(coords, dtype=np.float32)
+        ntu = np.zeros((25, 3), dtype=np.float32)
+
+        def xyz(idx):
+            lm = landmarks[idx]
+            return np.array([lm.x, lm.y, lm.z], dtype=np.float32)
+
+        ntu[3] = xyz(0)
+        ntu[4] = xyz(11)
+        ntu[5] = xyz(13)
+        ntu[6] = xyz(15)
+        ntu[7] = xyz(19)
+        ntu[8] = xyz(12)
+        ntu[9] = xyz(14)
+        ntu[10] = xyz(16)
+        ntu[11] = xyz(20)
+        ntu[12] = xyz(23)
+        ntu[13] = xyz(25)
+        ntu[14] = xyz(27)
+        ntu[15] = xyz(31)
+        ntu[16] = xyz(24)
+        ntu[17] = xyz(26)
+        ntu[18] = xyz(28)
+        ntu[19] = xyz(32)
+
+        ntu[0] = (ntu[12] + ntu[16]) / 2.0
+        ntu[2] = (ntu[4] + ntu[8]) / 2.0
+        ntu[1] = (ntu[0] + ntu[2]) / 2.0
+        ntu[20] = ntu[2]
+
+        ntu[21] = xyz(17)
+        ntu[22] = xyz(21)
+        ntu[23] = xyz(18)
+        ntu[24] = xyz(22)
+        return ntu
 
     def _reset_rep_tracking(self, current_ankle_y=None):
         self.rep_started = False
@@ -226,7 +259,7 @@ class BurpeesTracker:
             }
 
         # ---------------------------------------------------------
-        # 2. ST-GCN TEMPORAL BUFFER
+        # 2. ST-GCN TEMPORAL BUFFER (NO INFERENCE INVOKED)
         # ---------------------------------------------------------
         frame_coords = self._extract_body_keypoints(landmarks)
         self.frame_buffer.append(frame_coords)

@@ -14,22 +14,22 @@ SETUP_MAX_SHOULDER_SPAN_RATIO = 0.28 # Strict side profile (16:9 webcam calibrat
 SETUP_MAX_HIP_SPAN_RATIO = 0.22      # Hips aligned sideways to camera
 SETUP_HIP_MIN_ANGLE = 156.0          # Standing tall at start (allows toe pointed out ready to lift)
 SETUP_KNEE_MIN_ANGLE = 148.0         # Step 1: Allows slight soft bend in standing knee
-SETUP_MIN_READY_FRAMES = 8           # Consecutive frames standing upright[cite: 16]
+SETUP_MIN_READY_FRAMES = 8           # Consecutive frames standing upright
 UNLOCK_RESET_FRAMES = 12             # Frames held standing tall to clear LOCKED_FAULT
-MIN_VISIBILITY_THRESHOLD = 2.0       # Minimum keypoint visibility[cite: 16]
+MIN_VISIBILITY_THRESHOLD = 2.0       # Minimum keypoint visibility
 
 # 2. Kinematic & Form Thresholds (Step 1, 2, 3, 4, 6)
 MAX_BACKWARD_SWING_RATIO = 0.12      # Catches swinging leg backward behind support ankle for momentum
 MAX_TORSO_LEAN_DELTA = 14.0          # Step 4: Max degrees upper body can lean backward/forward from baseline
-MIN_LIFT_KNEE_ANGLE = 150.0          # Step 3: Working leg must stay locked out straight (no knee bend)[cite: 16]
+MIN_LIFT_KNEE_ANGLE = 150.0          # Step 3: Working leg must stay locked out straight (no knee bend)
 MIN_SUPPORT_KNEE_ANGLE = 140.0       # Step 1: Allows soft bend in standing knee, catches deep knee buckling
 ECCENTRIC_DROP_SPEED_MAX = 22.0      # Step 6: Lower over a controlled 2-second count (no heavy dropping)
-EARLY_REVERSAL_DELTA = 8.0           # Early downward drop before reaching target height[cite: 16]
+EARLY_REVERSAL_DELTA = 8.0           # Early downward drop before reaching target height
 
 # 3. Raise Height & Range of Motion (Step 4, 5, 6)
 LIFTING_START_HIP_ANGLE = 150.0      # Raising leg in front initiates LIFTING
 MIN_VALID_REP_FLEXION_ANGLE = 142.0  # Ignore minor standing posture shifts (> 142°)
-HALF_RAISE_MAX_HIP_ANGLE = 135.0     # Lifting past 135° without reaching full height flags Half Rep (Bad Rep)[cite: 16]
+HALF_RAISE_MAX_HIP_ANGLE = 135.0     # Lifting past 135° without reaching full height flags Half Rep (Bad Rep)
 FULL_RAISE_MAX_HIP_ANGLE = 112.0     # Step 4 & 5: Leg raised high in front to hip/waist level (<= 112°)
 LOWERING_START_HIP_ANGLE = 120.0     # Step 6: Lowering leg down from peak
 REP_COMPLETE_HIP_ANGLE = 155.0       # Step 6: Touching toe lightly to floor completes the rep
@@ -39,17 +39,17 @@ DEBOUNCE_PROFILE = 3                 # Frames before flagging lost side view
 DEBOUNCE_SWING = 3                   # Frames before flagging backward pendulum swing
 DEBOUNCE_TORSO = 3                   # Frames before flagging backward torso lean
 DEBOUNCE_LIFT_KNEE = 3               # Frames before flagging bent working knee
-DEBOUNCE_SUPPORT_KNEE = 4            # Frames before flagging buckled support knee[cite: 16]
-DEBOUNCE_DROP = 2                    # Frames before flagging uncontrolled leg drop[cite: 16]
-DEBOUNCE_HALF_REP = 3                # Frames before confirming early reversal[cite: 16]
-DEBOUNCE_ML_FAULT = 5                #[cite: 16]
+DEBOUNCE_SUPPORT_KNEE = 4            # Frames before flagging buckled support knee
+DEBOUNCE_DROP = 2                    # Frames before flagging uncontrolled leg drop
+DEBOUNCE_HALF_REP = 3                # Frames before confirming early reversal
+DEBOUNCE_ML_FAULT = 5
 
 # 5. Machine Learning Sensitivity
-ML_FAULT_CONFIDENCE_THRESHOLD = 0.75 #[cite: 16]
+ML_FAULT_CONFIDENCE_THRESHOLD = 0.75
 
 # 6. Model & Buffer Settings
-SEQUENCE_LENGTH = 30                 #[cite: 16]
-POST_REP_FEEDBACK_FRAMES = 40        #[cite: 16]
+SEQUENCE_LENGTH = 30
+POST_REP_FEEDBACK_FRAMES = 40
 
 # =====================================================================
 
@@ -59,7 +59,7 @@ class StandingActiveStraightLegRaiseTracker:
         self.state = "WAITING"
         self.good_reps = 0
         self.bad_reps = 0
-        self.half_reps = 0                 # Kept at 0 for API compatibility[cite: 16]
+        self.half_reps = 0                 # Kept at 0 for API compatibility
 
         self.rep_started = False
         self.target_height_reached = False
@@ -69,12 +69,12 @@ class StandingActiveStraightLegRaiseTracker:
 
         # Posture Tripwires (STRICT SIDE / SAGITTAL VIEW)
         self.is_side_view = True
-        self.leg_swung_backward = False    # Catches pendulum momentum swing behind support leg[cite: 16]
-        self.lifted_knee_straight = True   # Step 3: Lock working knee out completely[cite: 16]
-        self.support_knee_straight = True  # Step 1: Soft bend allowed, no buckling[cite: 16]
-        self.torso_upright = True          # Step 2 & 4: Chest tall, do not lean backward[cite: 16]
-        self.controlled_descent = True     # Step 6: Controlled 2-second lowering[cite: 16]
-        self.ml_posture_maintained = True  #[cite: 16]
+        self.leg_swung_backward = False    # Catches pendulum momentum swing behind support leg
+        self.lifted_knee_straight = True   # Step 3: Lock working knee out completely
+        self.support_knee_straight = True  # Step 1: Soft bend allowed, no buckling
+        self.torso_upright = True          # Step 2 & 4: Chest tall, do not lean backward
+        self.controlled_descent = True     # Step 6: Controlled 2-second lowering
+        self.ml_posture_maintained = True
 
         # Debounce counters
         self.facing_camera_frames = 0
@@ -98,7 +98,7 @@ class StandingActiveStraightLegRaiseTracker:
         self.sequence_length = SEQUENCE_LENGTH
         self.frame_buffer = deque(maxlen=self.sequence_length)
 
-        # Load TFLite model[cite: 16]
+        # Load TFLite model
         self.interpreter = None
         model_path = os.path.join("models", "tflite", "st_gcn_standing_active_straight_leg_raise.tflite")
         if os.path.exists(model_path):
@@ -107,18 +107,48 @@ class StandingActiveStraightLegRaiseTracker:
                 self.interpreter.allocate_tensors()
                 self.input_details = self.interpreter.get_input_details()
                 self.output_details = self.interpreter.get_output_details()
-            except Exception:
+            except Exception as exc:
+                print(
+                    f"[STANDING LEG RAISE ERROR] __init__ model_path={model_path} | error={exc}",
+                    flush=True,
+                )
                 self.interpreter = None
 
     def _extract_body_keypoints(self, landmarks):
-        target_indices = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
-        coords = []
-        for idx in target_indices:
+        ntu = np.zeros((25, 3), dtype=np.float32)
+
+        def xyz(idx):
             lm = landmarks[idx]
-            coords.append([lm.x, lm.y, lm.z])
-        while len(coords) < 25:
-            coords.append([0.0, 0.0, 0.0])
-        return np.array(coords, dtype=np.float32)
+            return np.array([lm.x, lm.y, lm.z], dtype=np.float32)
+
+        ntu[3] = xyz(0)
+        ntu[4] = xyz(11)
+        ntu[5] = xyz(13)
+        ntu[6] = xyz(15)
+        ntu[7] = xyz(19)
+        ntu[8] = xyz(12)
+        ntu[9] = xyz(14)
+        ntu[10] = xyz(16)
+        ntu[11] = xyz(20)
+        ntu[12] = xyz(23)
+        ntu[13] = xyz(25)
+        ntu[14] = xyz(27)
+        ntu[15] = xyz(31)
+        ntu[16] = xyz(24)
+        ntu[17] = xyz(26)
+        ntu[18] = xyz(28)
+        ntu[19] = xyz(32)
+
+        ntu[0] = (ntu[12] + ntu[16]) / 2.0
+        ntu[2] = (ntu[4] + ntu[8]) / 2.0
+        ntu[1] = (ntu[0] + ntu[2]) / 2.0
+        ntu[20] = ntu[2]
+
+        ntu[21] = xyz(17)
+        ntu[22] = xyz(21)
+        ntu[23] = xyz(18)
+        ntu[24] = xyz(22)
+        return ntu
 
     def _reset_rep_tracking(self):
         self.rep_started = False
@@ -219,7 +249,7 @@ class StandingActiveStraightLegRaiseTracker:
             active_shoulder, active_hip = r_shoulder, r_hip
             support_leg_vis = (l_knee.visibility > 0.45 and l_ankle.visibility > 0.45)
 
-        # 3. Torso Inclination Relative to Vertical[cite: 16]
+        # 3. Torso Inclination Relative to Vertical
         primary_shoulder = r_shoulder if r_vis >= l_vis else l_shoulder
         primary_hip = r_hip if r_vis >= l_vis else l_hip
         dx_spine = primary_shoulder.x - primary_hip.x
@@ -274,14 +304,19 @@ class StandingActiveStraightLegRaiseTracker:
 
         if self.interpreter and len(self.frame_buffer) == self.sequence_length and self.rep_started:
             try:
-                seq = np.expand_dims(np.array(self.frame_buffer, dtype=np.float32), axis=0)
+                buf_tvc = np.array(self.frame_buffer, dtype=np.float32)
+                expected_shape = self.input_details[0]['shape']
+                if len(expected_shape) == 5:
+                    seq = np.transpose(buf_tvc, (2, 0, 1))[None, :, :, :, None]
+                elif len(expected_shape) == 4 and tuple(expected_shape[1:]) == (buf_tvc.shape[2], buf_tvc.shape[0], buf_tvc.shape[1]):
+                    seq = np.transpose(buf_tvc, (2, 0, 1))[None, :, :, :]
+                else:
+                    seq = np.expand_dims(buf_tvc, axis=0)
+
                 self.interpreter.set_tensor(self.input_details[0]['index'], seq)
                 self.interpreter.invoke()
-                out = self.interpreter.get_tensor(self.output_details[0]['index'])[0]
-
-                exp_scores = np.exp(out - np.max(out))
-                probs = exp_scores / np.sum(exp_scores)
-                bad_posture_prob = probs[0]
+                probs = self.interpreter.get_tensor(self.output_details[0]['index'])[0]
+                bad_posture_prob = float(probs[0])
 
                 if bad_posture_prob >= ML_FAULT_CONFIDENCE_THRESHOLD and self.state not in ["STANDING", "WAITING", "LOCKED_FAULT"]:
                     self.ml_fault_frames += 1
@@ -294,8 +329,12 @@ class StandingActiveStraightLegRaiseTracker:
                         self.ml_posture_maintained = False
                 else:
                     self.ml_fault_frames = max(0, self.ml_fault_frames - 1)
-            except Exception:
-                pass
+            except Exception as exc:
+                expected_shape = self.input_details[0]['shape'] if hasattr(self, "input_details") else None
+                print(
+                    f"[STANDING LEG RAISE ERROR] process_frame: expected_shape={expected_shape} | error={exc}",
+                    flush=True,
+                )
 
         # ---------------------------------------------------------
         # 3. KINEMATIC FORM TRIPWIRES (ACTIVE ACROSS LIFTING, PEAK, AND LOWERING)
@@ -455,7 +494,7 @@ class StandingActiveStraightLegRaiseTracker:
         if self.state == "LIFTING" and not ((active_hip_angle - self.min_hip_angle) > EARLY_REVERSAL_DELTA):
             self.reversal_frames = max(0, self.reversal_frames - 1)
 
-        # Step 6: Eccentric drop speed detector[cite: 16]
+        # Step 6: Eccentric drop speed detector
         if self.rep_started and self.state in ["LOWERING", "LIFTING"]:
             if self.prev_hip_angle is not None:
                 drop_speed = active_hip_angle - self.prev_hip_angle
@@ -546,7 +585,7 @@ class StandingActiveStraightLegRaiseTracker:
 
             self.post_rep_timer = POST_REP_FEEDBACK_FRAMES
 
-        # Dynamic Scoring[cite: 16]
+        # Dynamic Scoring
         form_score = max(0, min(100, int(100 - abs(active_hip_angle - 90) * 0.4))) if self.state != "STANDING" else 100
         if not self.is_side_view: form_score -= 35
         if self.leg_swung_backward: form_score -= 30

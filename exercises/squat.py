@@ -307,10 +307,7 @@ class SquatTracker:
                 seq = np.expand_dims(np.array(self.frame_buffer, dtype=np.float32), axis=0)
                 self.interpreter.set_tensor(self.input_details[0]['index'], seq)
                 self.interpreter.invoke()
-                out = self.interpreter.get_tensor(self.output_details[0]['index'])[0]
-
-                exp_scores = np.exp(out - np.max(out))
-                probs = exp_scores / np.sum(exp_scores)
+                probs = self.interpreter.get_tensor(self.output_details[0]['index'])[0]
                 bad_posture_prob = probs[0]
 
                 if bad_posture_prob >= ML_FAULT_CONFIDENCE_THRESHOLD and self.state not in ["STANDING", "WAITING", "LOCKED_FAULT"]:

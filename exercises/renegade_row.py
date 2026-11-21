@@ -10,55 +10,55 @@ from core.kinematics import calculate_angle
 # =====================================================================
 
 # 1. Setup & Starting Guard (Step 1-3: Prone High Plank on Dumbbells, Hands Under Shoulders)
-SETUP_PLANK_ELBOW_MIN_ANGLE = 148.0  # Arms straight in high plank on dumbbells[cite: 20]
-SETUP_PLANK_BODY_MIN_ANGLE = 150.0   # Rigid body line from head/shoulders to heels (Step 3)[cite: 20]
-SETUP_KNEE_EXT_MIN_ANGLE = 148.0     # Legs locked out on toes (knees off floor)[cite: 20]
+SETUP_PLANK_ELBOW_MIN_ANGLE = 148.0  # Arms straight in high plank on dumbbells
+SETUP_PLANK_BODY_MIN_ANGLE = 150.0   # Rigid body line from head/shoulders to heels (Step 3)
+SETUP_KNEE_EXT_MIN_ANGLE = 148.0     # Legs locked out on toes (knees off floor)
 SETUP_MAX_SHOULDER_SPAN_RATIO = 0.24 # Strict flat-shoulders side profile at setup
 SETUP_MAX_HIP_SPAN_RATIO = 0.20      # Hips squared flat to floor at setup
-SETUP_MAX_ARM_VERTICAL_TILT_DEG = 28.0 # Step 1: Hands stacked directly under shoulders[cite: 20]
-SETUP_MIN_READY_FRAMES = 6           # Consecutive frames holding high plank to confirm READY[cite: 20]
-UNLOCK_RESET_FRAMES = 12             # Frames held in high plank to clear LOCKED_FAULT[cite: 20]
-MIN_VISIBILITY_THRESHOLD = 2.4       # Minimum side-profile landmark visibility sum[cite: 20]
+SETUP_MAX_ARM_VERTICAL_TILT_DEG = 28.0 # Step 1: Hands stacked directly under shoulders
+SETUP_MIN_READY_FRAMES = 6           # Consecutive frames holding high plank to confirm READY
+UNLOCK_RESET_FRAMES = 12             # Frames held in high plank to clear LOCKED_FAULT
+MIN_VISIBILITY_THRESHOLD = 2.4       # Minimum side-profile landmark visibility sum
 
 # 2. Kinematic & Form Thresholds (Prone Position, Anti-Twist, No Sag/Pike, Support Arm Locked)
-MIN_KNEE_OFF_FLOOR_ANGLE = 142.0     # Knees bending past this indicates kneeling[cite: 20]
-MIN_SUPPORT_ARM_ANGLE = 138.0        # Planted support arm must stay straight (rejects push-up/collapse)[cite: 20]
+MIN_KNEE_OFF_FLOOR_ANGLE = 142.0     # Knees bending past this indicates kneeling
+MIN_SUPPORT_ARM_ANGLE = 138.0        # Planted support arm must stay straight (rejects push-up/collapse)
 MAX_HIP_TWIST_DELTA = 0.10           # Step 4: Max pelvis vertical height difference (anti-rotation)
 MAX_SHOULDER_TWIST_DELTA = 0.15      # Step 4: Max shoulder vertical height difference (anti-torso twist)
 MAX_BODY_TWIST_SPAN_RATIO = 0.30     # Step 4: Max horizontal shoulder/hip opening during row before flagging body twist
 MAX_CAMERA_POV_LOSS_RATIO = 0.45     # Only flags camera POV error if user completely rotates to front view
-MIN_CORE_SAG_BODY_ANGLE = 140.0      # Hips sagging below the shoulder-to-ankle line[cite: 20]
-MIN_CORE_PIKE_BODY_ANGLE = 135.0     # Butt piking upward above the shoulder-to-ankle line[cite: 20]
-ECCENTRIC_DROP_SPEED_MAX = 24.0      # Step 6: Lower with control (deg/frame cutoff)[cite: 20]
-EARLY_REVERSAL_DELTA = 10.0          # Early downward drop before reaching rib cage[cite: 20]
+MIN_CORE_SAG_BODY_ANGLE = 140.0      # Hips sagging below the shoulder-to-ankle line
+MIN_CORE_PIKE_BODY_ANGLE = 135.0     # Butt piking upward above the shoulder-to-ankle line
+ECCENTRIC_DROP_SPEED_MAX = 24.0      # Step 6: Lower with control (deg/frame cutoff)
+EARLY_REVERSAL_DELTA = 10.0          # Early downward drop before reaching rib cage
 
 # 3. Pull Depth & Rib-Cage Range of Motion (Step 4 & 6)
-FULL_ROW_MAX_ELBOW_ANGLE = 95.0      # Rowing elbow flexed <= 95° at top of pull[cite: 20]
-MIN_WRIST_LIFT_RATIO = 0.22          # Dumbbell wrist must lift >= 22% of arm length off floor toward ribs[cite: 20]
-HALF_ROW_MAX_ELBOW_ANGLE = 122.0     # Pulling past 122° without reaching ribs flags Half Rep (Bad Rep)[cite: 20]
-MIN_VALID_REP_FLEXION_ANGLE = 132.0  # Ignore minor plank weight shifts (> 132°)[cite: 20]
-PULLING_START_ELBOW_ANGLE = 138.0    # Initiating pull from floor[cite: 20]
-LOWERING_START_ELBOW_ANGLE = 105.0   # Lowering dumbbell from rib cage[cite: 20]
-REP_COMPLETE_ELBOW_ANGLE = 148.0     # Dumbbell returned to floor in high plank lockout[cite: 20]
+FULL_ROW_MAX_ELBOW_ANGLE = 95.0      # Rowing elbow flexed <= 95° at top of pull
+MIN_WRIST_LIFT_RATIO = 0.22          # Dumbbell wrist must lift >= 22% of arm length off floor toward ribs
+HALF_ROW_MAX_ELBOW_ANGLE = 122.0     # Pulling past 122° without reaching ribs flags Half Rep (Bad Rep)
+MIN_VALID_REP_FLEXION_ANGLE = 132.0  # Ignore minor plank weight shifts (> 132°)
+PULLING_START_ELBOW_ANGLE = 138.0    # Initiating pull from floor
+LOWERING_START_ELBOW_ANGLE = 105.0   # Lowering dumbbell from rib cage
+REP_COMPLETE_ELBOW_ANGLE = 148.0     # Dumbbell returned to floor in high plank lockout
 
 # 4. Debounce Frame Thresholds
 DEBOUNCE_PROFILE = 4
-DEBOUNCE_KNEE_FLOOR = 3              # Frames before flagging knees on floor[cite: 20]
-DEBOUNCE_ELBOW_PLANK = 3             # Frames before flagging dropping to elbows[cite: 20]
+DEBOUNCE_KNEE_FLOOR = 3              # Frames before flagging knees on floor
+DEBOUNCE_ELBOW_PLANK = 3             # Frames before flagging dropping to elbows
 DEBOUNCE_TWIST = 4                   # Fast 2-frame trigger for twisting torso or hips!
-DEBOUNCE_SAG = 4                     # Frames before flagging hip sag[cite: 20]
-DEBOUNCE_PIKE = 3                    # Frames before flagging hip pike[cite: 20]
-DEBOUNCE_SUPPORT = 3                 # Frames before flagging supporting arm collapse[cite: 20]
-DEBOUNCE_DROP = 2                    # Frames before flagging slamming weight down[cite: 20]
-DEBOUNCE_HALF_REP = 3                # Frames before confirming premature lowering[cite: 20]
-DEBOUNCE_ML_FAULT = 5                #[cite: 20]
+DEBOUNCE_SAG = 4                     # Frames before flagging hip sag
+DEBOUNCE_PIKE = 3                    # Frames before flagging hip pike
+DEBOUNCE_SUPPORT = 3                 # Frames before flagging supporting arm collapse
+DEBOUNCE_DROP = 2                    # Frames before flagging slamming weight down
+DEBOUNCE_HALF_REP = 3                # Frames before confirming premature lowering
+DEBOUNCE_ML_FAULT = 5
 
 # 5. Machine Learning Sensitivity
-ML_FAULT_CONFIDENCE_THRESHOLD = 0.75 #[cite: 20]
+ML_FAULT_CONFIDENCE_THRESHOLD = 0.75
 
 # 6. Model & Buffer Settings
-SEQUENCE_LENGTH = 30                 #[cite: 20]
-POST_REP_FEEDBACK_FRAMES = 40        #[cite: 20]
+SEQUENCE_LENGTH = 30
+POST_REP_FEEDBACK_FRAMES = 40
 
 # =====================================================================
 
@@ -68,28 +68,28 @@ class RenegadeRowTracker:
         self.state = "WAITING"
         self.good_reps = 0
         self.bad_reps = 0
-        self.half_reps = 0                 # Kept at 0 for API compatibility (half reps count as bad reps)[cite: 20]
+        self.half_reps = 0                 # Kept at 0 for API compatibility (half reps count as bad reps)
 
         self.rep_started = False
         self.depth_reached = False
         self.was_half_rep = False
         self.min_row_elbow = 180.0
         self.max_wrist_lift_ratio = 0.0
-        self.locked_rowing_side = None     # Locks 'LEFT' or 'RIGHT' arm during active row[cite: 20]
+        self.locked_rowing_side = None     # Locks 'LEFT' or 'RIGHT' arm during active row
         self.baseline_floor_wrist_y = None
 
         # Posture Tripwires (STRICT PRONE SIDE PLANK VIEW)
         self.is_side_view = True
         self.is_prone_plank = True         # Enforces face-down prone high plank position
-        self.hands_under_shoulders = True  # Step 1: Hands stacked directly under shoulders[cite: 20]
-        self.knees_off_ground = True       # Step 1 & 3: High plank on toes, not knees[cite: 20]
-        self.no_elbow_plank = True         # Step 1: High plank on hands/dumbbells, not forearms[cite: 20]
+        self.hands_under_shoulders = True  # Step 1: Hands stacked directly under shoulders
+        self.knees_off_ground = True       # Step 1 & 3: High plank on toes, not knees
+        self.no_elbow_plank = True         # Step 1: High plank on hands/dumbbells, not forearms
         self.no_hip_rotation = True        # Step 4: Do not twist body (catches BOTH hip and torso/shoulder twist!)
-        self.core_maintained = True        # Step 3: Straight line from head to heels (no sag)[cite: 20]
-        self.no_pike = True                # Step 3: No piking hips up[cite: 20]
-        self.support_arm_locked = True     # Step 4: Planted arm stays straight while opposite arm rows[cite: 20]
-        self.controlled_descent = True     # Step 6: Lower dumbbell with control[cite: 20]
-        self.ml_posture_maintained = True  #[cite: 20]
+        self.core_maintained = True        # Step 3: Straight line from head to heels (no sag)
+        self.no_pike = True                # Step 3: No piking hips up
+        self.support_arm_locked = True     # Step 4: Planted arm stays straight while opposite arm rows
+        self.controlled_descent = True     # Step 6: Lower dumbbell with control
+        self.ml_posture_maintained = True
 
         # Debounce counters
         self.profile_frames = 0
@@ -115,7 +115,7 @@ class RenegadeRowTracker:
         self.sequence_length = SEQUENCE_LENGTH
         self.frame_buffer = deque(maxlen=self.sequence_length)
 
-        # Load TFLite model[cite: 20]
+        # Load TFLite model
         self.interpreter = None
         model_path = os.path.join("models", "tflite", "st_gcn_renegade_row.tflite")
         if os.path.exists(model_path):
@@ -124,18 +124,48 @@ class RenegadeRowTracker:
                 self.interpreter.allocate_tensors()
                 self.input_details = self.interpreter.get_input_details()
                 self.output_details = self.interpreter.get_output_details()
-            except Exception:
+            except Exception as exc:
+                print(
+                    f"[RENEGADE ROW ERROR] __init__ model_path={model_path} | error={exc}",
+                    flush=True,
+                )
                 self.interpreter = None
 
     def _extract_body_keypoints(self, landmarks):
-        target_indices = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
-        coords = []
-        for idx in target_indices:
+        ntu = np.zeros((25, 3), dtype=np.float32)
+
+        def xyz(idx):
             lm = landmarks[idx]
-            coords.append([lm.x, lm.y, lm.z])
-        while len(coords) < 25:
-            coords.append([0.0, 0.0, 0.0])
-        return np.array(coords, dtype=np.float32)
+            return np.array([lm.x, lm.y, lm.z], dtype=np.float32)
+
+        ntu[3] = xyz(0)
+        ntu[4] = xyz(11)
+        ntu[5] = xyz(13)
+        ntu[6] = xyz(15)
+        ntu[7] = xyz(19)
+        ntu[8] = xyz(12)
+        ntu[9] = xyz(14)
+        ntu[10] = xyz(16)
+        ntu[11] = xyz(20)
+        ntu[12] = xyz(23)
+        ntu[13] = xyz(25)
+        ntu[14] = xyz(27)
+        ntu[15] = xyz(31)
+        ntu[16] = xyz(24)
+        ntu[17] = xyz(26)
+        ntu[18] = xyz(28)
+        ntu[19] = xyz(32)
+
+        ntu[0] = (ntu[12] + ntu[16]) / 2.0
+        ntu[2] = (ntu[4] + ntu[8]) / 2.0
+        ntu[1] = (ntu[0] + ntu[2]) / 2.0
+        ntu[20] = ntu[2]
+
+        ntu[21] = xyz(17)
+        ntu[22] = xyz(21)
+        ntu[23] = xyz(18)
+        ntu[24] = xyz(22)
+        return ntu
 
     def _reset_rep_tracking(self):
         self.rep_started = False
@@ -207,7 +237,7 @@ class RenegadeRowTracker:
                 "row_elbow_angle": 0.0, "body_angle": 0.0, "depth_reached": False
             }
 
-        # Primary camera-facing side for plank body line[cite: 20]
+        # Primary camera-facing side for plank body line
         use_right_profile = (r_vis >= l_vis)
         active_ear = r_ear if use_right_profile else l_ear
         active_shoulder = r_shoulder if use_right_profile else l_shoulder
@@ -217,14 +247,14 @@ class RenegadeRowTracker:
         active_knee = r_knee if use_right_profile else l_knee
         active_ankle = r_ankle if use_right_profile else l_ankle
 
-        # Occlusion-safe bilateral arm angles[cite: 20]
+        # Occlusion-safe bilateral arm angles
         l_arm_valid = (l_elbow.visibility > 0.45 and l_wrist.visibility > 0.45)
         r_arm_valid = (r_elbow.visibility > 0.45 and r_wrist.visibility > 0.45)
 
         l_elbow_angle = calculate_angle(l_shoulder, l_elbow, l_wrist) if l_arm_valid else 165.0
         r_elbow_angle = calculate_angle(r_shoulder, r_elbow, r_wrist) if r_arm_valid else 165.0
 
-        # Lock onto whichever arm initiates the row so mid-rep occlusion never swaps arms[cite: 20]
+        # Lock onto whichever arm initiates the row so mid-rep occlusion never swaps arms
         if self.rep_started and self.locked_rowing_side is not None:
             row_with_left = (self.locked_rowing_side == "LEFT")
         else:
@@ -250,7 +280,7 @@ class RenegadeRowTracker:
             support_shoulder = l_shoulder if l_arm_valid else active_shoulder
             both_arms_visible = (l_arm_valid and r_arm_valid)
 
-        # Body & Knee Angles[cite: 20]
+        # Body & Knee Angles
         body_angle = calculate_angle(active_shoulder, active_hip, active_ankle)
         knee_extension_angle = calculate_angle(active_hip, active_knee, active_ankle)
 
@@ -283,22 +313,22 @@ class RenegadeRowTracker:
         face_pointed_down = nose.y >= (active_ear.y - 0.03)
         is_prone = is_horizontal and hands_below_shoulders and feet_on_floor_level and face_pointed_down
 
-        # Step 1: Hands stacked directly under shoulders check[cite: 20]
+        # Step 1: Hands stacked directly under shoulders check
         dx_support_arm = abs(support_shoulder.x - support_wrist.x)
         dy_support_arm = max(abs(support_wrist.y - support_shoulder.y), 0.05)
         support_arm_tilt_deg = np.degrees(np.arctan2(dx_support_arm, dy_support_arm))
         is_hand_under_shoulder = support_arm_tilt_deg <= SETUP_MAX_ARM_VERTICAL_TILT_DEG
 
-        # Step 3: True Shoulder-to-Ankle Line Deviation for Sag vs Pike[cite: 20]
+        # Step 3: True Shoulder-to-Ankle Line Deviation for Sag vs Pike
         expected_hip_y = (active_shoulder.y + active_ankle.y) / 2.0
-        hip_vertical_deviation = active_hip.y - expected_hip_y  # Positive = sagging down, Negative = piking up[cite: 20]
+        hip_vertical_deviation = active_hip.y - expected_hip_y  # Positive = sagging down, Negative = piking up
 
-        # Step 4: Dumbbell Wrist Lift Toward Rib Cage[cite: 20]
+        # Step 4: Dumbbell Wrist Lift Toward Rib Cage
         floor_wrist_y = self.baseline_floor_wrist_y if self.baseline_floor_wrist_y is not None else max(l_wrist.y, r_wrist.y)
         arm_len = max(abs(floor_wrist_y - rowing_shoulder.y), 0.25)
         wrist_lift_ratio = max(0.0, (floor_wrist_y - rowing_wrist.y) / arm_len)
 
-        # Ground contact guards[cite: 20]
+        # Ground contact guards
         is_kneeling = (knee_extension_angle < MIN_KNEE_OFF_FLOOR_ANGLE) or (active_knee.y > max(active_hip.y, active_ankle.y) + 0.02)
         is_on_elbows = (active_elbow.y >= active_wrist.y - 0.02) and (rowing_elbow_angle < 125.0) and (wrist_lift_ratio < 0.10)
 
@@ -381,14 +411,19 @@ class RenegadeRowTracker:
 
         if self.interpreter and len(self.frame_buffer) == self.sequence_length and self.rep_started:
             try:
-                seq = np.expand_dims(np.array(self.frame_buffer, dtype=np.float32), axis=0)
+                buf_tvc = np.array(self.frame_buffer, dtype=np.float32)
+                expected_shape = self.input_details[0]['shape']
+                if len(expected_shape) == 5:
+                    seq = np.transpose(buf_tvc, (2, 0, 1))[None, :, :, :, None]
+                elif len(expected_shape) == 4 and tuple(expected_shape[1:]) == (buf_tvc.shape[2], buf_tvc.shape[0], buf_tvc.shape[1]):
+                    seq = np.transpose(buf_tvc, (2, 0, 1))[None, :, :, :]
+                else:
+                    seq = np.expand_dims(buf_tvc, axis=0)
+
                 self.interpreter.set_tensor(self.input_details[0]['index'], seq)
                 self.interpreter.invoke()
-                out = self.interpreter.get_tensor(self.output_details[0]['index'])[0]
-
-                exp_scores = np.exp(out - np.max(out))
-                probs = exp_scores / np.sum(exp_scores)
-                bad_posture_prob = probs[0]
+                probs = self.interpreter.get_tensor(self.output_details[0]['index'])[0]
+                bad_posture_prob = float(probs[0])
 
                 if bad_posture_prob >= ML_FAULT_CONFIDENCE_THRESHOLD and self.state not in ["PLANKING", "WAITING", "LOCKED_FAULT"]:
                     self.ml_fault_frames += 1
@@ -401,8 +436,12 @@ class RenegadeRowTracker:
                         self.ml_posture_maintained = False
                 else:
                     self.ml_fault_frames = max(0, self.ml_fault_frames - 1)
-            except Exception:
-                pass
+            except Exception as exc:
+                expected_shape = self.input_details[0]['shape'] if hasattr(self, "input_details") else None
+                print(
+                    f"[RENEGADE ROW ERROR] process_frame: expected_shape={expected_shape} | error={exc}",
+                    flush=True,
+                )
 
         # ---------------------------------------------------------
         # 3. KINEMATIC FORM TRIPWIRES
@@ -440,7 +479,7 @@ class RenegadeRowTracker:
             else:
                 self.profile_frames = max(0, self.profile_frames - 1)
 
-            # C. Knees Touching Floor[cite: 20]
+            # C. Knees Touching Floor
             if is_kneeling:
                 self.knee_floor_frames += 1
                 if self.knee_floor_frames >= DEBOUNCE_KNEE_FLOOR:
@@ -450,7 +489,7 @@ class RenegadeRowTracker:
             else:
                 self.knee_floor_frames = max(0, self.knee_floor_frames - 1)
 
-            # D. Dropping to Forearm Plank[cite: 20]
+            # D. Dropping to Forearm Plank
             if is_on_elbows:
                 self.elbow_plank_frames += 1
                 if self.elbow_plank_frames >= DEBOUNCE_ELBOW_PLANK:
@@ -460,7 +499,7 @@ class RenegadeRowTracker:
             else:
                 self.elbow_plank_frames = max(0, self.elbow_plank_frames - 1)
 
-            # E. Step 3: Core Sag Check (relative to shoulder-to-ankle line)[cite: 20]
+            # E. Step 3: Core Sag Check (relative to shoulder-to-ankle line)
             if (hip_vertical_deviation > 0.03) and (body_angle < MIN_CORE_SAG_BODY_ANGLE):
                 self.sag_frames += 1
                 if self.sag_frames >= DEBOUNCE_SAG:
@@ -470,7 +509,7 @@ class RenegadeRowTracker:
             else:
                 self.sag_frames = max(0, self.sag_frames - 1)
 
-            # F. Step 3: Hip Pike Check (relative to shoulder-to-ankle line)[cite: 20]
+            # F. Step 3: Hip Pike Check (relative to shoulder-to-ankle line)
             if (hip_vertical_deviation < -0.04) and (body_angle < MIN_CORE_PIKE_BODY_ANGLE):
                 self.pike_frames += 1
                 if self.pike_frames >= DEBOUNCE_PIKE:
@@ -480,7 +519,7 @@ class RenegadeRowTracker:
             else:
                 self.pike_frames = max(0, self.pike_frames - 1)
 
-            # G. Supporting Arm Locked[cite: 20]
+            # G. Supporting Arm Locked
             is_doing_pushup_cheat = (wrist_lift_ratio < 0.10) and (rowing_elbow_angle < 115.0)
             if (both_arms_visible and support_elbow_angle < MIN_SUPPORT_ARM_ANGLE) or is_doing_pushup_cheat:
                 self.support_frames += 1
@@ -536,7 +575,7 @@ class RenegadeRowTracker:
             if self.post_rep_timer == 0 and self.no_hip_rotation:
                 self.current_feedback = "Pull dumbbell to rib cage, keep body flat (do not twist)..."
 
-        # Step 4 Complete: Elbow <= 95° AND dumbbell lifted off floor toward rib cage[cite: 20]
+        # Step 4 Complete: Elbow <= 95° AND dumbbell lifted off floor toward rib cage
         elif self.state == "PULLING" and rowing_elbow_angle <= FULL_ROW_MAX_ELBOW_ANGLE and self.max_wrist_lift_ratio >= MIN_WRIST_LIFT_RATIO:
             self.depth_reached = True
             self.state = "TOP"
@@ -544,7 +583,7 @@ class RenegadeRowTracker:
             if self.post_rep_timer == 0 and self.no_hip_rotation:
                 self.current_feedback = "Rib-cage squeeze! Slowly return dumbbell to the floor."
 
-        # Early downward reversal (Half Rep Branch -> Bad Rep)[cite: 20]
+        # Early downward reversal (Half Rep Branch -> Bad Rep)
         elif self.state == "PULLING" and not self.depth_reached and (rowing_elbow_angle - self.min_row_elbow) > EARLY_REVERSAL_DELTA:
             self.reversal_frames += 1
             if self.reversal_frames >= DEBOUNCE_HALF_REP:
@@ -557,7 +596,7 @@ class RenegadeRowTracker:
                     flush=True,
                 )
 
-        # Step 6: Lower with Control[cite: 20]
+        # Step 6: Lower with Control
         elif self.state == "TOP" and rowing_elbow_angle > LOWERING_START_ELBOW_ANGLE:
             self.state = "LOWERING"
             if self.post_rep_timer == 0 and self.no_hip_rotation:
@@ -566,7 +605,7 @@ class RenegadeRowTracker:
         if self.state == "PULLING" and not ((rowing_elbow_angle - self.min_row_elbow) > EARLY_REVERSAL_DELTA):
             self.reversal_frames = max(0, self.reversal_frames - 1)
 
-        # Step 6: Eccentric drop speed detector[cite: 20]
+        # Step 6: Eccentric drop speed detector
         if self.rep_started and self.state in ["LOWERING", "PULLING"]:
             if self.prev_row_elbow is not None:
                 drop_speed = rowing_elbow_angle - self.prev_row_elbow
@@ -673,7 +712,7 @@ class RenegadeRowTracker:
 
             self.post_rep_timer = POST_REP_FEEDBACK_FRAMES
 
-        # Dynamic Scoring[cite: 20]
+        # Dynamic Scoring
         form_score = max(0, min(100, int(100 - abs(rowing_elbow_angle - 90) * 0.4))) if self.state != "PLANKING" else 100
         if not self.no_hip_rotation: form_score -= 40
         if not self.is_prone_plank: form_score -= 40

@@ -10,17 +10,17 @@ from core.kinematics import calculate_angle
 # =====================================================================
 
 # 1. Setup & Starting Guard (Step 1-3: Side View, Plate at Hips, Tall Core)
-SETUP_MAX_RAISE_ANGLE = 55.0         # Plate resting near hips/thighs[cite: 8]
+SETUP_MAX_RAISE_ANGLE = 55.0         # Plate resting near hips/thighs
 SETUP_MIN_ELBOW_ANGLE = 125.0        # Arms straight or with a very soft bend at elbows
-SETUP_MAX_SHOULDER_SPAN_RATIO = 0.10 # Strict side profile ratio (rejects front view)
+SETUP_MAX_SHOULDER_SPAN_RATIO = 0.15 # Strict side profile ratio (rejects front view)
 SETUP_MAX_HIP_SPAN_RATIO = 0.16      # Hips aligned sideways to camera
-SETUP_MIN_READY_FRAMES = 6           # Consecutive frames to confirm READY[cite: 8]
-UNLOCK_RESET_FRAMES = 15             # Frames held with plate at hips to clear LOCKED_FAULT (~0.5s)[cite: 8]
-MIN_VISIBILITY_THRESHOLD = 1.8       # Minimum upper-body keypoint visibility[cite: 8]
+SETUP_MIN_READY_FRAMES = 6           # Consecutive frames to confirm READY
+UNLOCK_RESET_FRAMES = 15             # Frames held with plate at hips to clear LOCKED_FAULT (~0.5s)
+MIN_VISIBILITY_THRESHOLD = 1.8       # Minimum upper-body keypoint visibility
 
 # 2. Kinematic & Form Thresholds (Step 4-6: Soft Elbows, Braced Core, Controlled Negative)
 MIN_ARM_STRAIGHT_ANGLE = 120.0       # Catches elbow curling/bending cheat while allowing soft elbow bend
-MAX_TORSO_LEAN_DELTA = 5.0          # Max degrees spine can lean/heave backward or forward from baseline[cite: 8]
+MAX_TORSO_LEAN_DELTA = 5.0          # Max degrees spine can lean/heave backward or forward from baseline
 ECCENTRIC_DROP_SPEED_MAX = 28.0      # Angular drop speed cutoff (deg/frame) to enforce controlled negative
 
 # 3. Overhead Arc Progression & Half-Rep Thresholds (Step 4 & 5: Full Overhead Squeeze)
@@ -33,18 +33,18 @@ REP_COMPLETE_ANGLE = 55.0            # Returning plate to hip level completes th
 
 # 4. Debounce Frame Thresholds
 DEBOUNCE_CURL = 4                    # Frames before flagging bent elbows / arm curling
-DEBOUNCE_PROFILE = 2                # Fast trigger for losing side view[cite: 8]
+DEBOUNCE_PROFILE = 2                # Fast trigger for losing side view
 DEBOUNCE_TORSO = 2                  # Frames before flagging backward spinal heave
-DEBOUNCE_DROP = 2                    # Frames before flagging uncontrolled drop[cite: 8]
+DEBOUNCE_DROP = 2                    # Frames before flagging uncontrolled drop
 DEBOUNCE_HALF_REP = 4                # Consecutive frames dropping before confirming early reversal
-DEBOUNCE_ML_FAULT = 5                # Consecutive frames for ST-GCN fault[cite: 8]
+DEBOUNCE_ML_FAULT = 5                # Consecutive frames for ST-GCN fault
 
 # 5. Machine Learning Sensitivity
-ML_FAULT_CONFIDENCE_THRESHOLD = 0.75 # Softmax confidence threshold[cite: 8]
+ML_FAULT_CONFIDENCE_THRESHOLD = 0.95 # Softmax confidence threshold
 
 # 6. Model & Buffer Settings
-SEQUENCE_LENGTH = 30                 # ST-GCN temporal window[cite: 8]
-POST_REP_FEEDBACK_FRAMES = 40        # Post-rep feedback hold frames[cite: 8]
+SEQUENCE_LENGTH = 30                 # ST-GCN temporal window
+POST_REP_FEEDBACK_FRAMES = 40        # Post-rep feedback hold frames
 
 # =====================================================================
 
@@ -62,11 +62,11 @@ class OverheadTrapRaiseTracker:
         self.max_raise_angle = 0.0
 
         # Instructor Tripwires (STRICT SIDE VIEW - UPPER BODY ONLY)
-        self.is_side_view = True           # Enforces side profile view[cite: 8]
-        self.arms_straight = True          # Catches bicep curling / excessive elbow bend[cite: 8]
-        self.torso_upright = True          # Catches leaning back to heave the plate[cite: 8]
-        self.controlled_descent = True     # Catches dropping the plate on the negative[cite: 8]
-        self.ml_posture_maintained = True  # ST-GCN posture check (catches shrugging/rounding)[cite: 8]
+        self.is_side_view = True           # Enforces side profile view
+        self.arms_straight = True          # Catches bicep curling / excessive elbow bend
+        self.torso_upright = True          # Catches leaning back to heave the plate
+        self.controlled_descent = True     # Catches dropping the plate on the negative
+        self.ml_posture_maintained = True  # ST-GCN posture check (catches shrugging/rounding)
 
         self.baseline_torso_angle = None
 
@@ -98,18 +98,49 @@ class OverheadTrapRaiseTracker:
                 self.interpreter.allocate_tensors()
                 self.input_details = self.interpreter.get_input_details()
                 self.output_details = self.interpreter.get_output_details()
-            except Exception:
+            except Exception as exc:
+                print(
+                    f"[TRAP RAISE ERROR] __init__ model_path={model_path} | error={exc}",
+                    flush=True,
+                )
                 self.interpreter = None
 
     def _extract_body_keypoints(self, landmarks):
-        target_indices = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
-        coords = []
-        for idx in target_indices:
+        """Maps MediaPipe 33 landmarks to the NTU-25 skeleton layout."""
+        ntu = np.zeros((25, 3), dtype=np.float32)
+
+        def xyz(idx):
             lm = landmarks[idx]
-            coords.append([lm.x, lm.y, lm.z])
-        while len(coords) < 25:
-            coords.append([0.0, 0.0, 0.0])
-        return np.array(coords, dtype=np.float32)
+            return np.array([lm.x, lm.y, lm.z], dtype=np.float32)
+
+        ntu[3] = xyz(0)    # Nose
+        ntu[4] = xyz(11)   # Left Shoulder
+        ntu[5] = xyz(13)   # Left Elbow
+        ntu[6] = xyz(15)   # Left Wrist
+        ntu[7] = xyz(19)   # Left Hand/Index
+        ntu[8] = xyz(12)   # Right Shoulder
+        ntu[9] = xyz(14)   # Right Elbow
+        ntu[10] = xyz(16)  # Right Wrist
+        ntu[11] = xyz(20)  # Right Hand/Index
+        ntu[12] = xyz(23)  # Left Hip
+        ntu[13] = xyz(25)  # Left Knee
+        ntu[14] = xyz(27)  # Left Ankle
+        ntu[15] = xyz(31)  # Left Foot
+        ntu[16] = xyz(24)  # Right Hip
+        ntu[17] = xyz(26)  # Right Knee
+        ntu[18] = xyz(28)  # Right Ankle
+        ntu[19] = xyz(32)  # Right Foot
+
+        ntu[0] = (ntu[12] + ntu[16]) / 2.0  # Base Spine (Mid-Hip)
+        ntu[2] = (ntu[4] + ntu[8]) / 2.0    # Spine Shoulder / Neck (Mid-Shoulder)
+        ntu[1] = (ntu[0] + ntu[2]) / 2.0    # Mid Spine
+        ntu[20] = ntu[2]                    # Chest
+
+        ntu[21] = xyz(17)  # Left Pinky
+        ntu[22] = xyz(21)  # Left Thumb
+        ntu[23] = xyz(18)  # Right Pinky
+        ntu[24] = xyz(22)  # Right Thumb
+        return ntu
 
     def _reset_rep_tracking(self):
         self.rep_started = False
@@ -165,7 +196,7 @@ class OverheadTrapRaiseTracker:
         active_wrist = r_wrist if r_vis > l_vis else l_wrist
         active_hip = r_hip if r_vis > l_vis else l_hip
 
-        # Sagittal Joint Angles[cite: 8]
+        # Sagittal Joint Angles
         raise_angle = calculate_angle(active_hip, active_shoulder, active_elbow)
         elbow_angle = calculate_angle(active_shoulder, active_elbow, active_wrist)
 
@@ -178,7 +209,7 @@ class OverheadTrapRaiseTracker:
 
         is_side = (shoulder_aspect < SETUP_MAX_SHOULDER_SPAN_RATIO) and (hip_aspect < SETUP_MAX_HIP_SPAN_RATIO)
 
-        # Sagittal Spine Tilt (0° = vertical upright)[cite: 8]
+        # Sagittal Spine Tilt (0° = vertical upright)
         dx_spine = active_shoulder.x - active_hip.x
         dy_spine = max(abs(active_shoulder.y - active_hip.y), 0.10)
         spine_tilt_deg = np.degrees(np.arctan2(dx_spine, dy_spine))
@@ -230,14 +261,19 @@ class OverheadTrapRaiseTracker:
 
         if self.interpreter and len(self.frame_buffer) == self.sequence_length and self.rep_started:
             try:
-                seq = np.expand_dims(np.array(self.frame_buffer, dtype=np.float32), axis=0)
+                buf_tvc = np.array(self.frame_buffer, dtype=np.float32)
+                expected_shape = self.input_details[0]['shape']
+                if len(expected_shape) == 5:
+                    seq = np.transpose(buf_tvc, (2, 0, 1))[None, :, :, :, None]
+                elif len(expected_shape) == 4 and tuple(expected_shape[1:]) == (buf_tvc.shape[2], buf_tvc.shape[0], buf_tvc.shape[1]):
+                    seq = np.transpose(buf_tvc, (2, 0, 1))[None, :, :, :]
+                else:
+                    seq = np.expand_dims(buf_tvc, axis=0)
+
                 self.interpreter.set_tensor(self.input_details[0]['index'], seq)
                 self.interpreter.invoke()
-                out = self.interpreter.get_tensor(self.output_details[0]['index'])[0]
-
-                exp_scores = np.exp(out - np.max(out))
-                probs = exp_scores / np.sum(exp_scores)
-                bad_posture_prob = probs[0]
+                probs = self.interpreter.get_tensor(self.output_details[0]['index'])[0]
+                bad_posture_prob = float(probs[0])
 
                 if bad_posture_prob >= ML_FAULT_CONFIDENCE_THRESHOLD and self.state not in ["RESTING", "WAITING", "LOCKED_FAULT"]:
                     self.ml_fault_frames += 1
@@ -250,14 +286,18 @@ class OverheadTrapRaiseTracker:
                         self.ml_posture_maintained = False
                 else:
                     self.ml_fault_frames = max(0, self.ml_fault_frames - 1)
-            except Exception:
-                pass
+            except Exception as exc:
+                expected_shape = self.input_details[0]['shape'] if hasattr(self, "input_details") else None
+                print(
+                    f"[TRAP RAISE ERROR] process_frame: expected_shape={expected_shape} | error={exc}",
+                    flush=True,
+                )
 
         # ---------------------------------------------------------
         # 3. KINEMATIC FORM TRIPWIRES
         # ---------------------------------------------------------
         if self.rep_started and self.state in ["ASCENDING", "TOP", "DESCENDING"]:
-            # A. Elbow Bending / Bicep Curling Cheat[cite: 8]
+            # A. Elbow Bending / Bicep Curling Cheat
             if elbow_angle < MIN_ARM_STRAIGHT_ANGLE:
                 self.curl_frames += 1
                 if self.curl_frames >= DEBOUNCE_CURL:
@@ -271,7 +311,7 @@ class OverheadTrapRaiseTracker:
             else:
                 self.curl_frames = max(0, self.curl_frames - 1)
 
-            # B. Strict Side Profile Tripwire[cite: 8]
+            # B. Strict Side Profile Tripwire
             # B. Strict Side Profile Tripwire (Uses config constants directly)
             if not is_side:
                 self.profile_frames += 1
@@ -373,7 +413,7 @@ class OverheadTrapRaiseTracker:
         if self.state == "ASCENDING" and not ((self.max_raise_angle - raise_angle) > DESCENDING_TRIGGER_DELTA):
             self.reversal_frames = max(0, self.reversal_frames - 1)
 
-        # Eccentric drop speed monitor (Step 6: Lower under control)[cite: 8]
+        # Eccentric drop speed monitor (Step 6: Lower under control)
         if self.rep_started and self.state in ["DESCENDING", "ASCENDING"]:
             if self.prev_raise_angle is not None:
                 drop_speed = self.prev_raise_angle - raise_angle
@@ -459,7 +499,7 @@ class OverheadTrapRaiseTracker:
 
             self.post_rep_timer = POST_REP_FEEDBACK_FRAMES
 
-        # Dynamic Scoring[cite: 8]
+        # Dynamic Scoring
         form_score = 100 if self.state == "RESTING" else max(0, min(100, int((raise_angle / 145) * 100)))
         if not self.arms_straight: form_score -= 40
         if not self.is_side_view: form_score -= 40

@@ -17,28 +17,28 @@ SETUP_MAX_SHOULDER_HIP_Y_DIFF = 0.14 # Shoulders and hips resting on the same fl
 SETUP_MAX_ANKLE_HIP_Y_DIFF = 0.16    # Feet planted on the same floor plane as hips
 SETUP_HIP_MIN_ANGLE = 100.0          # Lying flat on floor with knees bent
 SETUP_KNEE_MIN_ANGLE = 50.0          # Step 1: Knees bent at roughly 90° (50° to 125° window)
-SETUP_KNEE_MAX_ANGLE = 125.0         # Rejects straight-leg sit-ups[cite: 14]
-SETUP_MIN_READY_FRAMES = 6           # Frames lying down to confirm READY[cite: 14]
+SETUP_KNEE_MAX_ANGLE = 125.0         # Rejects straight-leg sit-ups
+SETUP_MIN_READY_FRAMES = 6           # Frames lying down to confirm READY
 UNLOCK_RESET_FRAMES = 10             # Frames lying flat to clear LOCKED_FAULT
 MIN_VISIBILITY_THRESHOLD = 2.2       # Minimum keypoint visibility for profile
 
 # 2. Arm Placement & Floor Support Guard (Step 2: Fingertips at Ears OR Crossed Over Chest)
 MAX_HAND_HEAD_CHEST_RATIO = 0.68     # Wrists must stay near ears or chest (catches throwing arms / grabbing thighs)
-FLOOR_PUSH_ELBOW_HIP_MARGIN = 0.04   # Catches propping elbows down into the mat behind the torso to push up[cite: 14]
-DEBOUNCE_ARM_SUPPORT = 3             # Debounce filter for hand/elbow cheat detection[cite: 14]
+FLOOR_PUSH_ELBOW_HIP_MARGIN = 0.04   # Catches propping elbows down into the mat behind the torso to push up
+DEBOUNCE_ARM_SUPPORT = 3             # Debounce filter for hand/elbow cheat detection
 
 # 3. Kinematic & Form Thresholds (Step 1, 3, 5: Chin Tuck Allowed, Feet & Hips Flat, Knees Bent, Controlled Unroll)
 MIN_NECK_NEUTRAL_ANGLE = 90.0        # Step 3: Allows slight protective chin tuck while catching violent neck yanks
-MAX_FOOT_LIFT_DELTA = 0.07           # Step 1: Feet must stay planted flat on the floor[cite: 14]
+MAX_FOOT_LIFT_DELTA = 0.07           # Step 1: Feet must stay planted flat on the floor
 MAX_HIP_LIFT_DELTA = 0.07            # Step 1: Hips/butt must stay planted on the mat (no hip bridging)
 ACTIVE_KNEE_MAX_ANGLE = 135.0        # Step 1: Knees must stay bent (catches kicking legs straight out for momentum)
-ECCENTRIC_DROP_SPEED_MAX = 26.0      # Step 5: Unroll spine slowly (do not slap back hard against mat)[cite: 14]
-EARLY_REVERSAL_DELTA = 10.0          # Early downward reversal delta[cite: 14]
+ECCENTRIC_DROP_SPEED_MAX = 26.0      # Step 5: Unroll spine slowly (do not slap back hard against mat)
+EARLY_REVERSAL_DELTA = 10.0          # Early downward reversal delta
 
 # 4. Curl-Up & Unroll Range of Motion (Step 4 & 5: Vertical Torso -> Full Unroll to Mat)
 ASCENDING_START_TILT_DEG = 60.0      # Lifting head/shoulders off mat (< 60° from vertical) initiates ASCENDING
 MIN_VALID_REP_TILT_DEG = 54.0        # Ignore minor head/shoulder shifts on the mat (> 54°)
-HALF_SITUP_MAX_TILT_DEG = 48.0       # Crunching partway (<= 48° tilt) without sitting vertical flags Half Rep[cite: 14]
+HALF_SITUP_MAX_TILT_DEG = 48.0       # Crunching partway (<= 48° tilt) without sitting vertical flags Half Rep
 FULL_COMPRESSION_MAX_HIP_ANGLE = 82.0# Step 4: Chest brought up close to thighs (<= 82°)
 FULL_VERTICAL_MAX_TILT_DEG = 30.0    # Step 4: Torso curled all the way up near vertical (<= 30° from vertical)
 DESCENDING_START_TILT_DEG = 38.0     # Step 5: Unrolling spine back down from TOP
@@ -46,19 +46,19 @@ REP_COMPLETE_TILT_DEG = 65.0         # Step 5: Shoulders unrolled all the way ba
 
 # 5. Debounce Frame Thresholds
 DEBOUNCE_PROFILE = 4
-DEBOUNCE_NECK = 4                    #[cite: 14]
-DEBOUNCE_FEET = 4                    #[cite: 14]
+DEBOUNCE_NECK = 4
+DEBOUNCE_FEET = 4
 DEBOUNCE_KNEES = 4                   # Frames before flagging straightening legs mid-rep
-DEBOUNCE_DROP = 2                    #[cite: 14]
-DEBOUNCE_HALF_REP = 3                #[cite: 14]
-DEBOUNCE_ML_FAULT = 6                #[cite: 14]
+DEBOUNCE_DROP = 2
+DEBOUNCE_HALF_REP = 3
+DEBOUNCE_ML_FAULT = 6
 
 # 6. Machine Learning Sensitivity
-ML_FAULT_CONFIDENCE_THRESHOLD = 0.78 #[cite: 14]
+ML_FAULT_CONFIDENCE_THRESHOLD = 0.78
 
 # 7. Model & Buffer Settings
-SEQUENCE_LENGTH = 30                 #[cite: 14]
-POST_REP_FEEDBACK_FRAMES = 35        #[cite: 14]
+SEQUENCE_LENGTH = 30
+POST_REP_FEEDBACK_FRAMES = 35
 
 # =====================================================================
 
@@ -68,7 +68,7 @@ class SitUpTracker:
         self.state = "WAITING"
         self.good_reps = 0
         self.bad_reps = 0
-        self.half_reps = 0                 # Kept at 0 for API compatibility[cite: 14]
+        self.half_reps = 0                 # Kept at 0 for API compatibility
 
         self.rep_started = False
         self.depth_reached = False
@@ -78,12 +78,12 @@ class SitUpTracker:
 
         # Posture Tripwires (STRICT SIDE / SAGITTAL VIEW)
         self.is_side_view = True
-        self.arms_overhead = True          # Step 2: Hands stay at ears or chest (no floor push or leg grab)[cite: 14]
-        self.neck_neutral = True           # Step 2 & 3: No yanking neck forward[cite: 14]
-        self.feet_planted = True           # Step 1: Feet & hips planted flat on floor[cite: 14]
+        self.arms_overhead = True          # Step 2: Hands stay at ears or chest (no floor push or leg grab)
+        self.neck_neutral = True           # Step 2 & 3: No yanking neck forward
+        self.feet_planted = True           # Step 1: Feet & hips planted flat on floor
         self.knees_stayed_bent = True     # Step 1: Knees remain bent ~90° throughout rep
-        self.controlled_descent = True     # Step 5: Unroll spine segment by segment[cite: 14]
-        self.ml_posture_maintained = True  #[cite: 14]
+        self.controlled_descent = True     # Step 5: Unroll spine segment by segment
+        self.ml_posture_maintained = True
 
         # Debounce counters
         self.profile_frames = 0
@@ -108,7 +108,7 @@ class SitUpTracker:
         self.sequence_length = SEQUENCE_LENGTH
         self.frame_buffer = deque(maxlen=self.sequence_length)
 
-        # Load TFLite model[cite: 14]
+        # Load TFLite model
         self.interpreter = None
         model_path = os.path.join("models", "tflite", "st_gcn_sit_up.tflite")
         if os.path.exists(model_path):
@@ -117,18 +117,48 @@ class SitUpTracker:
                 self.interpreter.allocate_tensors()
                 self.input_details = self.interpreter.get_input_details()
                 self.output_details = self.interpreter.get_output_details()
-            except Exception:
+            except Exception as exc:
+                print(
+                    f"[SIT-UP ERROR] __init__ model_path={model_path} | error={exc}",
+                    flush=True,
+                )
                 self.interpreter = None
 
     def _extract_body_keypoints(self, landmarks):
-        target_indices = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
-        coords = []
-        for idx in target_indices:
+        ntu = np.zeros((25, 3), dtype=np.float32)
+
+        def xyz(idx):
             lm = landmarks[idx]
-            coords.append([lm.x, lm.y, lm.z])
-        while len(coords) < 25:
-            coords.append([0.0, 0.0, 0.0])
-        return np.array(coords, dtype=np.float32)
+            return np.array([lm.x, lm.y, lm.z], dtype=np.float32)
+
+        ntu[3] = xyz(0)
+        ntu[4] = xyz(11)
+        ntu[5] = xyz(13)
+        ntu[6] = xyz(15)
+        ntu[7] = xyz(19)
+        ntu[8] = xyz(12)
+        ntu[9] = xyz(14)
+        ntu[10] = xyz(16)
+        ntu[11] = xyz(20)
+        ntu[12] = xyz(23)
+        ntu[13] = xyz(25)
+        ntu[14] = xyz(27)
+        ntu[15] = xyz(31)
+        ntu[16] = xyz(24)
+        ntu[17] = xyz(26)
+        ntu[18] = xyz(28)
+        ntu[19] = xyz(32)
+
+        ntu[0] = (ntu[12] + ntu[16]) / 2.0
+        ntu[2] = (ntu[4] + ntu[8]) / 2.0
+        ntu[1] = (ntu[0] + ntu[2]) / 2.0
+        ntu[20] = ntu[2]
+
+        ntu[21] = xyz(17)
+        ntu[22] = xyz(21)
+        ntu[23] = xyz(18)
+        ntu[24] = xyz(22)
+        return ntu
 
     def _reset_rep_tracking(self):
         self.rep_started = False
@@ -207,18 +237,18 @@ class SitUpTracker:
         active_knee = r_knee if use_right else l_knee
         active_ankle = r_ankle if use_right else l_ankle
 
-        # 1. Sagittal Angles[cite: 14]
+        # 1. Sagittal Angles
         hip_angle = calculate_angle(active_shoulder, active_hip, active_knee)
         neck_angle = calculate_angle(active_ear, active_shoulder, active_hip)
         knee_angle = calculate_angle(active_hip, active_knee, active_ankle)
 
-        # 2. Torso Tilt From Vertical (90° = lying flat on mat, 0° = sitting completely vertical)[cite: 14]
+        # 2. Torso Tilt From Vertical (90° = lying flat on mat, 0° = sitting completely vertical)
         torso_len = max(np.hypot(active_shoulder.x - active_hip.x, active_shoulder.y - active_hip.y), 0.32)
         dx_torso = abs(active_shoulder.x - active_hip.x)
         dy_torso = max(abs(active_hip.y - active_shoulder.y), 0.02)
         torso_tilt_deg = np.degrees(np.arctan2(dx_torso, dy_torso))
 
-        # 3. Strict Side Profile Verification[cite: 14]
+        # 3. Strict Side Profile Verification
         shoulder_aspect = abs(l_shoulder.x - r_shoulder.x) / torso_len
         hip_aspect = abs(l_hip.x - r_hip.x) / torso_len
         is_side = (shoulder_aspect < SETUP_MAX_SHOULDER_SPAN_RATIO) and (hip_aspect < SETUP_MAX_HIP_SPAN_RATIO)
@@ -303,14 +333,19 @@ class SitUpTracker:
 
         if self.interpreter and len(self.frame_buffer) == self.sequence_length and self.rep_started:
             try:
-                seq = np.expand_dims(np.array(self.frame_buffer, dtype=np.float32), axis=0)
+                buf_tvc = np.array(self.frame_buffer, dtype=np.float32)
+                expected_shape = self.input_details[0]['shape']
+                if len(expected_shape) == 5:
+                    seq = np.transpose(buf_tvc, (2, 0, 1))[None, :, :, :, None]
+                elif len(expected_shape) == 4 and tuple(expected_shape[1:]) == (buf_tvc.shape[2], buf_tvc.shape[0], buf_tvc.shape[1]):
+                    seq = np.transpose(buf_tvc, (2, 0, 1))[None, :, :, :]
+                else:
+                    seq = np.expand_dims(buf_tvc, axis=0)
+
                 self.interpreter.set_tensor(self.input_details[0]['index'], seq)
                 self.interpreter.invoke()
-                out = self.interpreter.get_tensor(self.output_details[0]['index'])[0]
-
-                exp_scores = np.exp(out - np.max(out))
-                probs = exp_scores / np.sum(exp_scores)
-                bad_posture_prob = probs[0]
+                probs = self.interpreter.get_tensor(self.output_details[0]['index'])[0]
+                bad_posture_prob = float(probs[0])
 
                 if bad_posture_prob >= ML_FAULT_CONFIDENCE_THRESHOLD and self.state not in ["BOTTOM", "WAITING", "LOCKED_FAULT"]:
                     self.ml_fault_frames += 1
@@ -323,8 +358,12 @@ class SitUpTracker:
                         self.ml_posture_maintained = False
                 else:
                     self.ml_fault_frames = max(0, self.ml_fault_frames - 1)
-            except Exception:
-                pass
+            except Exception as exc:
+                expected_shape = self.input_details[0]['shape'] if hasattr(self, "input_details") else None
+                print(
+                    f"[SIT-UP ERROR] process_frame: expected_shape={expected_shape} | error={exc}",
+                    flush=True,
+                )
 
         # ---------------------------------------------------------
         # 3. KINEMATIC FORM TRIPWIRES
@@ -333,7 +372,7 @@ class SitUpTracker:
             self.min_hip_angle = min(self.min_hip_angle, hip_angle)
             self.min_torso_tilt_deg = min(self.min_torso_tilt_deg, torso_tilt_deg)
 
-            # A. Strict Side View Check[cite: 14]
+            # A. Strict Side View Check
             if not is_side:
                 self.profile_frames += 1
                 if self.profile_frames >= DEBOUNCE_PROFILE:
@@ -343,7 +382,7 @@ class SitUpTracker:
             else:
                 self.profile_frames = max(0, self.profile_frames - 1)
 
-            # B. Step 2: Arm Cheat Detection (Catches pushing elbows into floor OR throwing hands to grab thighs)[cite: 14]
+            # B. Step 2: Arm Cheat Detection (Catches pushing elbows into floor OR throwing hands to grab thighs)
             elbow_pushing_mat = (torso_tilt_deg > 35.0) and (active_elbow.y > active_hip.y + FLOOR_PUSH_ELBOW_HIP_MARGIN)
             hands_thrown_or_grabbing_legs = not is_hands_in_position
 
@@ -360,7 +399,7 @@ class SitUpTracker:
             else:
                 self.arm_support_frames = max(0, self.arm_support_frames - 1)
 
-            # C. Step 2 & 3: Neck Yank Detection[cite: 14]
+            # C. Step 2 & 3: Neck Yank Detection
             if neck_angle < MIN_NECK_NEUTRAL_ANGLE and torso_tilt_deg > 30.0:
                 self.neck_frames += 1
                 if self.neck_frames >= DEBOUNCE_NECK:
@@ -440,7 +479,7 @@ class SitUpTracker:
             if self.post_rep_timer == 0:
                 self.current_feedback = "Vertical top reached! Unroll spine slowly back down to mat."
 
-        # Early downward reversal (Half Rep / Crunch Only -> Flagged as Bad Rep)[cite: 14]
+        # Early downward reversal (Half Rep / Crunch Only -> Flagged as Bad Rep)
         elif self.state == "ASCENDING" and not self.depth_reached and (torso_tilt_deg - self.min_torso_tilt_deg) > EARLY_REVERSAL_DELTA:
             self.reversal_frames += 1
             if self.reversal_frames >= DEBOUNCE_HALF_REP:
@@ -454,7 +493,7 @@ class SitUpTracker:
                     flush=True,
                 )
 
-        # Step 5: Unroll Spine Back Down from TOP ONLY[cite: 14]
+        # Step 5: Unroll Spine Back Down from TOP ONLY
         elif self.state == "TOP" and torso_tilt_deg > DESCENDING_START_TILT_DEG:
             self.state = "DESCENDING"
             if self.post_rep_timer == 0:
@@ -463,7 +502,7 @@ class SitUpTracker:
         if self.state == "ASCENDING" and not ((torso_tilt_deg - self.min_torso_tilt_deg) > EARLY_REVERSAL_DELTA):
             self.reversal_frames = max(0, self.reversal_frames - 1)
 
-        # Step 5: Eccentric drop detector (catches slapping back hard against floor)[cite: 14]
+        # Step 5: Eccentric drop detector (catches slapping back hard against floor)
         if self.rep_started and self.state in ["DESCENDING", "ASCENDING"]:
             if self.prev_torso_tilt is not None:
                 drop_speed = torso_tilt_deg - self.prev_torso_tilt
@@ -554,7 +593,7 @@ class SitUpTracker:
 
             self.post_rep_timer = POST_REP_FEEDBACK_FRAMES
 
-        # Dynamic Scoring[cite: 14]
+        # Dynamic Scoring
         form_score = max(0, min(100, int(((90.0 - torso_tilt_deg) / 65.0) * 100))) if self.state != "BOTTOM" else 100
         if not self.is_side_view: form_score -= 35
         if not self.arms_overhead: form_score -= 40

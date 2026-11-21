@@ -13,11 +13,11 @@ from core.kinematics import calculate_angle
 SETUP_MAX_SHOULDER_SPAN_RATIO = 0.40 # Strict side profile view (16:9 webcam calibrated)
 SETUP_MAX_TORSO_DROP = 0.32          # Quadruped / bear-crouch torso angle
 SETUP_MAX_HIP_ANGLE = 122.0          # Knees bent in loaded quadruped/crouch base
-SETUP_MIN_SUPPORT_ARM_ANGLE = 135.0  # Arms extended supporting body on hands (not elbows)[cite: 20]
-SETUP_MAX_WRIST_SHOULDER_DRIFT = 0.35# Wrists stacked roughly under shoulders[cite: 20]
+SETUP_MIN_SUPPORT_ARM_ANGLE = 135.0  # Arms extended supporting body on hands (not elbows)
+SETUP_MAX_WRIST_SHOULDER_DRIFT = 0.35# Wrists stacked roughly under shoulders
 SETUP_MIN_READY_FRAMES = 6           # Frames holding steady base to confirm READY
 UNLOCK_RESET_FRAMES = 10             # Frames held in base to clear LOCKED_FAULT
-MIN_VISIBILITY_THRESHOLD = 2.0       # Minimum keypoint visibility[cite: 20]
+MIN_VISIBILITY_THRESHOLD = 2.0       # Minimum keypoint visibility
 
 # 2. Bilateral Two-Foot Lift & Form Thresholds
 MIN_FOOT_LIFT_RATIO = 0.14           # Minimum vertical lift of ankles off floor (normalized by torso_len)
@@ -40,14 +40,14 @@ DEBOUNCE_SINGLE_FOOT = 3             # Frames before flagging kicking with only 
 DEBOUNCE_KNEE_ANGLE = 4
 DEBOUNCE_ARMS = 3                    # Frames before flagging collapsed support arms
 DEBOUNCE_HALF_REP = 3                # Frames before confirming premature downward return
-DEBOUNCE_ML_FAULT = 5                #[cite: 20]
+DEBOUNCE_ML_FAULT = 5
 
 # 5. Machine Learning Sensitivity
-ML_FAULT_CONFIDENCE_THRESHOLD = 0.75 #[cite: 20]
+ML_FAULT_CONFIDENCE_THRESHOLD = 0.90
 
 # 6. Model & Buffer Settings
-SEQUENCE_LENGTH = 30                 #[cite: 20]
-POST_REP_FEEDBACK_FRAMES = 40        #[cite: 20]
+SEQUENCE_LENGTH = 30
+POST_REP_FEEDBACK_FRAMES = 40
 
 # =====================================================================
 
@@ -68,10 +68,10 @@ class MuleKickTracker:
         # Instructor Tripwires (SIDE VIEW - TWO-FOOT MULE KICK)
         self.is_side_view = True
         self.both_feet_lifted = True         # Enforces BOTH feet lifting together (rejects 1-leg kick)
-        self.knee_bent_90 = True             # Knees bent driving heels up[cite: 20]
-        self.spine_neutral = True            # Core braced, no collapsing[cite: 20]
-        self.arms_supported = True           # Wrists planted under shoulders, arms straight[cite: 20]
-        self.ml_posture_maintained = True    #[cite: 20]
+        self.knee_bent_90 = True             # Knees bent driving heels up
+        self.spine_neutral = True            # Core braced, no collapsing
+        self.arms_supported = True           # Wrists planted under shoulders, arms straight
+        self.ml_posture_maintained = True
 
         self.baseline_ankle_y = None
         self.baseline_knee_y = None
@@ -97,7 +97,7 @@ class MuleKickTracker:
         self.sequence_length = SEQUENCE_LENGTH
         self.frame_buffer = deque(maxlen=self.sequence_length)
 
-        # Load TFLite model[cite: 20]
+        # Load TFLite model
         self.interpreter = None
         model_path = os.path.join("models", "tflite", "st_gcn_mule_kick.tflite")
         if os.path.exists(model_path):
@@ -106,17 +106,49 @@ class MuleKickTracker:
                 self.interpreter.allocate_tensors()
                 self.input_details = self.interpreter.get_input_details()
                 self.output_details = self.interpreter.get_output_details()
-            except Exception:
+            except Exception as exc:
+                print(
+                    f"[MULE KICK ERROR] __init__ model_path={model_path} | error={exc}",
+                    flush=True,
+                )
                 self.interpreter = None
 
     def _extract_body_keypoints(self, landmarks):
-        target_indices = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
-        coords = []
-        for idx in target_indices:
-            coords.append([landmarks[idx].x, landmarks[idx].y, landmarks[idx].z])
-        while len(coords) < 25:
-            coords.append([0.0, 0.0, 0.0])
-        return np.array(coords, dtype=np.float32)
+        """Maps MediaPipe 33 landmarks to the NTU-25 skeleton layout."""
+        ntu = np.zeros((25, 3), dtype=np.float32)
+
+        def xyz(idx):
+            lm = landmarks[idx]
+            return np.array([lm.x, lm.y, lm.z], dtype=np.float32)
+
+        ntu[3] = xyz(0)    # Nose
+        ntu[4] = xyz(11)   # Left Shoulder
+        ntu[5] = xyz(13)   # Left Elbow
+        ntu[6] = xyz(15)   # Left Wrist
+        ntu[7] = xyz(19)   # Left Hand/Index
+        ntu[8] = xyz(12)   # Right Shoulder
+        ntu[9] = xyz(14)   # Right Elbow
+        ntu[10] = xyz(16)  # Right Wrist
+        ntu[11] = xyz(20)  # Right Hand/Index
+        ntu[12] = xyz(23)  # Left Hip
+        ntu[13] = xyz(25)  # Left Knee
+        ntu[14] = xyz(27)  # Left Ankle
+        ntu[15] = xyz(31)  # Left Foot
+        ntu[16] = xyz(24)  # Right Hip
+        ntu[17] = xyz(26)  # Right Knee
+        ntu[18] = xyz(28)  # Right Ankle
+        ntu[19] = xyz(32)  # Right Foot
+
+        ntu[0] = (ntu[12] + ntu[16]) / 2.0  # Base Spine (Mid-Hip)
+        ntu[2] = (ntu[4] + ntu[8]) / 2.0    # Spine Shoulder / Neck (Mid-Shoulder)
+        ntu[1] = (ntu[0] + ntu[2]) / 2.0    # Mid Spine
+        ntu[20] = ntu[2]                    # Chest
+
+        ntu[21] = xyz(17)  # Left Pinky
+        ntu[22] = xyz(21)  # Left Thumb
+        ntu[23] = xyz(18)  # Right Pinky
+        ntu[24] = xyz(22)  # Right Thumb
+        return ntu
 
     def _reset_rep_tracking(self):
         self.rep_started = False
@@ -173,7 +205,7 @@ class MuleKickTracker:
                 "knee_angle": 0.0, "hip_angle": 0.0
             }
 
-        # Primary camera-facing side for upper-body quadruped alignment[cite: 20]
+        # Primary camera-facing side for upper-body quadruped alignment
         if r_vis >= l_vis:
             active_shoulder, active_elbow, active_wrist, active_hip = r_shoulder, r_elbow, r_wrist, r_hip
         else:
@@ -184,7 +216,7 @@ class MuleKickTracker:
         shoulder_span_ratio = shoulder_span_x / torso_len
         is_side = shoulder_span_ratio < SETUP_MAX_SHOULDER_SPAN_RATIO
 
-        # 1. Quadruped / Bear-Crouch Upper-Body Support (Wrists under shoulders, arms straight)[cite: 20]
+        # 1. Quadruped / Bear-Crouch Upper-Body Support (Wrists under shoulders, arms straight)
         support_arm_angle = calculate_angle(active_shoulder, active_elbow, active_wrist)
         wrist_shoulder_drift = abs(active_wrist.x - active_shoulder.x) / torso_len
         arms_properly_stacked = (
@@ -192,7 +224,7 @@ class MuleKickTracker:
             and (wrist_shoulder_drift <= SETUP_MAX_WRIST_SHOULDER_DRIFT)
         )
 
-        # 2. Bilateral Hip & Knee Angles[cite: 20]
+        # 2. Bilateral Hip & Knee Angles
         l_hip_angle = calculate_angle(l_shoulder, l_hip, l_knee)
         r_hip_angle = calculate_angle(r_shoulder, r_hip, r_knee)
         l_knee_angle = calculate_angle(l_hip, l_knee, l_ankle)
@@ -283,14 +315,19 @@ class MuleKickTracker:
 
         if self.interpreter and len(self.frame_buffer) == self.sequence_length and self.rep_started:
             try:
-                seq = np.expand_dims(np.array(self.frame_buffer, dtype=np.float32), axis=0)
+                buf_tvc = np.array(self.frame_buffer, dtype=np.float32)
+                expected_shape = self.input_details[0]['shape']
+                if len(expected_shape) == 5:
+                    seq = np.transpose(buf_tvc, (2, 0, 1))[None, :, :, :, None]
+                elif len(expected_shape) == 4 and tuple(expected_shape[1:]) == (buf_tvc.shape[2], buf_tvc.shape[0], buf_tvc.shape[1]):
+                    seq = np.transpose(buf_tvc, (2, 0, 1))[None, :, :, :]
+                else:
+                    seq = np.expand_dims(buf_tvc, axis=0)
+
                 self.interpreter.set_tensor(self.input_details[0]['index'], seq)
                 self.interpreter.invoke()
-                out = self.interpreter.get_tensor(self.output_details[0]['index'])[0]
-
-                exp_scores = np.exp(out - np.max(out))
-                probs = exp_scores / np.sum(exp_scores)
-                bad_posture_prob = probs[0]
+                probs = self.interpreter.get_tensor(self.output_details[0]['index'])[0]
+                bad_posture_prob = float(probs[0])
 
                 if bad_posture_prob >= ML_FAULT_CONFIDENCE_THRESHOLD and self.state not in ["TABLETOP", "WAITING", "LOCKED_FAULT"]:
                     self.ml_fault_frames += 1
@@ -303,8 +340,12 @@ class MuleKickTracker:
                         self.ml_posture_maintained = False
                 else:
                     self.ml_fault_frames = max(0, self.ml_fault_frames - 1)
-            except Exception:
-                pass
+            except Exception as exc:
+                expected_shape = self.input_details[0]['shape'] if hasattr(self, "input_details") else None
+                print(
+                    f"[MULE KICK ERROR] process_frame: expected_shape={expected_shape} | error={exc}",
+                    flush=True,
+                )
 
         # ---------------------------------------------------------
         # 3. KINEMATIC TRIPWIRES (TWO-FOOT LIFT ENFORCEMENT)

@@ -115,18 +115,48 @@ class BarbellRowTracker:
                 self.interpreter.allocate_tensors()
                 self.input_details = self.interpreter.get_input_details()
                 self.output_details = self.interpreter.get_output_details()
-            except Exception:
+            except Exception as exc:
+                print(
+                    f"[BARBELL ROW ERROR] __init__ model_path={model_path} | error={exc}",
+                    flush=True,
+                )
                 self.interpreter = None
 
     def _extract_body_keypoints(self, landmarks):
-        target_indices = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
-        coords = []
-        for idx in target_indices:
+        ntu = np.zeros((25, 3), dtype=np.float32)
+
+        def xyz(idx):
             lm = landmarks[idx]
-            coords.append([lm.x, lm.y, lm.z])
-        while len(coords) < 25:
-            coords.append([0.0, 0.0, 0.0])
-        return np.array(coords, dtype=np.float32)
+            return np.array([lm.x, lm.y, lm.z], dtype=np.float32)
+
+        ntu[3] = xyz(0)
+        ntu[4] = xyz(11)
+        ntu[5] = xyz(13)
+        ntu[6] = xyz(15)
+        ntu[7] = xyz(19)
+        ntu[8] = xyz(12)
+        ntu[9] = xyz(14)
+        ntu[10] = xyz(16)
+        ntu[11] = xyz(20)
+        ntu[12] = xyz(23)
+        ntu[13] = xyz(25)
+        ntu[14] = xyz(27)
+        ntu[15] = xyz(31)
+        ntu[16] = xyz(24)
+        ntu[17] = xyz(26)
+        ntu[18] = xyz(28)
+        ntu[19] = xyz(32)
+
+        ntu[0] = (ntu[12] + ntu[16]) / 2.0
+        ntu[2] = (ntu[4] + ntu[8]) / 2.0
+        ntu[1] = (ntu[0] + ntu[2]) / 2.0
+        ntu[20] = ntu[2]
+
+        ntu[21] = xyz(17)
+        ntu[22] = xyz(21)
+        ntu[23] = xyz(18)
+        ntu[24] = xyz(22)
+        return ntu
 
     def _reset_rep_tracking(self):
         self.rep_started = False
@@ -304,22 +334,37 @@ class BarbellRowTracker:
 
         if self.interpreter and len(self.frame_buffer) == self.sequence_length:
             try:
-                seq = np.array(self.frame_buffer, dtype=np.float32)
-                tensor_input = np.expand_dims(seq, axis=0)
+                buf_tvc = np.array(self.frame_buffer, dtype=np.float32)
+                expected_shape = self.input_details[0]['shape']
+                if len(expected_shape) == 5:
+                    tensor_input = np.transpose(buf_tvc, (2, 0, 1))[None, :, :, :, None]
+                elif len(expected_shape) == 4 and tuple(expected_shape[1:]) == (buf_tvc.shape[2], buf_tvc.shape[0], buf_tvc.shape[1]):
+                    tensor_input = np.transpose(buf_tvc, (2, 0, 1))[None, :, :, :]
+                else:
+                    tensor_input = np.expand_dims(buf_tvc, axis=0)
+
                 self.interpreter.set_tensor(self.input_details[0]['index'], tensor_input)
                 self.interpreter.invoke()
-                output_logits = self.interpreter.get_tensor(self.output_details[0]['index'])[0]
-                exp_vals = np.exp(output_logits - np.max(output_logits))
-                probs = exp_vals / np.sum(exp_vals)
+                probs = self.interpreter.get_tensor(self.output_details[0]['index'])[0]
 
-                if probs[0] > ML_CONFIDENCE_THRESHOLD and self.state in ["ASCENDING", "TOP", "DESCENDING"]:
+                if float(probs[0]) > ML_CONFIDENCE_THRESHOLD and self.state in ["ASCENDING", "TOP", "DESCENDING"]:
                     self.ml_bad_frames += 1
                     if self.ml_bad_frames >= DEBOUNCE_ML:
+                        if self.ml_posture_maintained:
+                            print(
+                                f"[BARBELL ROW FAULT] AI ST-GCN flagged bad posture: prob={float(probs[0]):.2f} "
+                                f"(min={ML_CONFIDENCE_THRESHOLD})",
+                                flush=True,
+                            )
                         self.ml_posture_maintained = False
                 else:
                     self.ml_bad_frames = max(0, self.ml_bad_frames - 1)
-            except Exception:
-                pass
+            except Exception as exc:
+                expected_shape = self.input_details[0]['shape'] if hasattr(self, "input_details") else None
+                print(
+                    f"[BARBELL ROW ERROR] process_frame: expected_shape={expected_shape} | error={exc}",
+                    flush=True,
+                )
 
         # ---------------------------------------------------------
         # 3. KINEMATIC TRIPWIRES (ONLY DURING ACTIVE REP)
@@ -329,6 +374,12 @@ class BarbellRowTracker:
             if not is_side:
                 self.profile_frames += 1
                 if self.profile_frames >= DEBOUNCE_PROFILE:
+                    if self.is_side_view:
+                        print(
+                            f"[BARBELL ROW FAULT] Lost side view: shoulder_span_ratio={(shoulder_span_x / torso_len):.2f} "
+                            f"(max={SETUP_MAX_SHOULDER_SPAN_RATIO})",
+                            flush=True,
+                        )
                     self.is_side_view = False
             else:
                 self.profile_frames = max(0, self.profile_frames - 1)
@@ -337,6 +388,12 @@ class BarbellRowTracker:
             if ankle_x_offset > FOOT_ALIGN_MAX_OFFSET:
                 self.foot_align_frames += 1
                 if self.foot_align_frames >= DEBOUNCE_FOOT_ALIGN:
+                    if self.feet_aligned:
+                        print(
+                            f"[BARBELL ROW FAULT] Feet misaligned: ankle_x_offset={ankle_x_offset:.2f} "
+                            f"(max={FOOT_ALIGN_MAX_OFFSET})",
+                            flush=True,
+                        )
                     self.feet_aligned = False
             else:
                 self.foot_align_frames = max(0, self.foot_align_frames - 1)
@@ -345,6 +402,12 @@ class BarbellRowTracker:
             if (shin_angle_horizontal < SHIN_MIN_ANGLE) or (shin_angle_horizontal > SHIN_MAX_ANGLE):
                 self.shin_frames += 1
                 if self.shin_frames >= DEBOUNCE_SHIN:
+                    if self.shin_angle_proper:
+                        print(
+                            f"[BARBELL ROW FAULT] Shin angle out of range: shin_angle={shin_angle_horizontal:.1f}° "
+                            f"(range={SHIN_MIN_ANGLE}..{SHIN_MAX_ANGLE}°)",
+                            flush=True,
+                        )
                     self.shin_angle_proper = False
             else:
                 self.shin_frames = max(0, self.shin_frames - 1)
@@ -353,6 +416,12 @@ class BarbellRowTracker:
             if is_knee_locked_straight or (not is_thigh_in_bend_window and raw_knee_angle > 164.0):
                 self.knee_frames += 1
                 if self.knee_frames >= DEBOUNCE_KNEE:
+                    if self.knee_bend_proper:
+                        print(
+                            f"[BARBELL ROW FAULT] Knee bend improper: knee_angle={raw_knee_angle:.1f}° "
+                            f"(max_lock={KNEE_LOCKOUT_MAX}°), thigh_angle={thigh_angle_horizontal:.1f}°",
+                            flush=True,
+                        )
                     self.knee_bend_proper = False
             else:
                 self.knee_frames = max(0, self.knee_frames - 1)
@@ -361,6 +430,12 @@ class BarbellRowTracker:
             if (torso_angle_horizontal < TORSO_MIN_ANGLE) or (torso_angle_horizontal > TORSO_MAX_ANGLE):
                 self.torso_frames += 1
                 if self.torso_frames >= DEBOUNCE_TORSO:
+                    if self.torso_angle_proper:
+                        print(
+                            f"[BARBELL ROW FAULT] Torso hinge angle out of range: torso_angle={torso_angle_horizontal:.1f}° "
+                            f"(range={TORSO_MIN_ANGLE}..{TORSO_MAX_ANGLE}°)",
+                            flush=True,
+                        )
                     self.torso_angle_proper = False
             else:
                 self.torso_frames = max(0, self.torso_frames - 1)
@@ -369,6 +444,12 @@ class BarbellRowTracker:
             if spine_angle < SPINE_MIN_ANGLE:
                 self.spine_frames += 1
                 if self.spine_frames >= DEBOUNCE_SPINE:
+                    if self.neutral_spine:
+                        print(
+                            f"[BARBELL ROW FAULT] Spine rounded: spine_angle={spine_angle:.1f}° "
+                            f"(min={SPINE_MIN_ANGLE}°)",
+                            flush=True,
+                        )
                     self.neutral_spine = False
             else:
                 self.spine_frames = max(0, self.spine_frames - 1)
@@ -377,6 +458,12 @@ class BarbellRowTracker:
             if forearm_tilt >= FOREARM_MAX_TILT:
                 self.forearm_frames += 1
                 if self.forearm_frames >= DEBOUNCE_FOREARM:
+                    if self.forearm_path_correct:
+                        print(
+                            f"[BARBELL ROW FAULT] Forearm curl / path fault: forearm_tilt={forearm_tilt:.1f}° "
+                            f"(max={FOREARM_MAX_TILT}°)",
+                            flush=True,
+                        )
                     self.forearm_path_correct = False
             else:
                 self.forearm_frames = max(0, self.forearm_frames - 1)
@@ -455,6 +542,12 @@ class BarbellRowTracker:
                 if drop_speed > ECCENTRIC_DROP_SPEED_MAX:
                     self.drop_frames += 1
                     if self.drop_frames >= DEBOUNCE_DROP:
+                        if self.controlled_descent:
+                            print(
+                                f"[BARBELL ROW FAULT] Uncontrolled descent: drop_speed={drop_speed:.1f} deg/frame "
+                                f"(max={ECCENTRIC_DROP_SPEED_MAX})",
+                                flush=True,
+                            )
                         self.controlled_descent = False
                 else:
                     self.drop_frames = max(0, self.drop_frames - 1)
@@ -499,14 +592,25 @@ class BarbellRowTracker:
                 self.current_feedback = "Bad rep: Incomplete row! Pull elbows level with torso to reset."
                 is_bad_rep = True
 
+            rep_num = self.good_reps + self.bad_reps + self.half_reps + 1
             if is_bad_rep:
                 self.bad_reps += 1
+                print(
+                    f"[BARBELL ROW REP #{rep_num} -> BAD REP] "
+                    f"Reason: {self.current_feedback} | min_elbow={self.min_elbow_angle:.1f}°",
+                    flush=True,
+                )
                 self.state = "LOCKED_FAULT"
                 self.unlock_frames = 0
                 self._reset_rep_tracking()
             else:
                 self.good_reps += 1
                 self.current_feedback = "Great row! Clean rep."
+                print(
+                    f"[BARBELL ROW REP #{rep_num} -> GOOD REP] "
+                    f"min_elbow={self.min_elbow_angle:.1f}°",
+                    flush=True,
+                )
                 self.state = "EXTENDED"
                 self._reset_rep_tracking()
 

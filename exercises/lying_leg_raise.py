@@ -10,12 +10,12 @@ from core.kinematics import calculate_angle
 # =====================================================================
 
 # 1. Setup & Starting Guard
-SETUP_LEG_RAISE_ANGLE_MAX = 35.0     # Both legs extended down close to floor during setup[cite: 7]
+SETUP_LEG_RAISE_ANGLE_MAX = 35.0     # Both legs extended down close to floor during setup
 SETUP_KNEE_STRAIGHT_MIN = 148.0      # Legs extended straight
 SETUP_MAX_SHOULDER_SPAN_RATIO = 0.38 # Enforces clean side profile view lying down
 SETUP_MIN_READY_FRAMES = 6
 UNLOCK_RESET_FRAMES = 12
-MIN_VISIBILITY_THRESHOLD = 2.0       # Minimum landmark visibility sum[cite: 7]
+MIN_VISIBILITY_THRESHOLD = 2.0       # Minimum landmark visibility sum
 
 # 2. Form & Isolation Thresholds
 MIN_KNEE_BEND_ANGLE = 140.0          # Bent knee momentum cheat threshold
@@ -28,7 +28,7 @@ ASCENDING_START_ANGLE = 34.0         # Near-camera leg raising off floor initiat
 MIN_VALID_REP_PEAK_ANGLE = 42.0      # Below 42° is treated as floor shift/jitter (ignored, not a half rep)
 FULL_TOP_MIN_ANGLE = 75.0            # Reaching near-vertical (~75-90°) confirms full range
 DESCENDING_TRIGGER_DELTA = 14.0      # Must drop a full 14° below peak to trigger descent (prevents mid-raise jitter)
-REP_COMPLETE_ANGLE = 30.0            # Returning leg to hover/bottom position completes rep[cite: 7]
+REP_COMPLETE_ANGLE = 30.0            # Returning leg to hover/bottom position completes rep
 ANGLE_SMOOTHING_ALPHA = 0.65         # EMA weight for current frame angle to kill MediaPipe jitter
 
 # 4. Debounce Frame Thresholds
@@ -38,11 +38,11 @@ DEBOUNCE_ARCH = 4
 DEBOUNCE_OTHER_LEG = 4               # Frames before flagging the back/far leg lifting up
 DEBOUNCE_OVER_RAISE = 3              # Frames before flagging leg going past 90-100 degrees
 DEBOUNCE_HALF_REP = 5                # Consecutive frames dropping required before confirming descent
-DEBOUNCE_ML_FAULT = 5                # Consecutive frames required to trip ML fault[cite: 7]
+DEBOUNCE_ML_FAULT = 5                # Consecutive frames required to trip ML fault
 
-ML_FAULT_CONFIDENCE_THRESHOLD = 0.75 # Softmax probability threshold[cite: 7]
-SEQUENCE_LENGTH = 30                 # ST-GCN temporal frame buffer size[cite: 7]
-POST_REP_FEEDBACK_FRAMES = 40        # Feedback display duration post-rep[cite: 7]
+ML_FAULT_CONFIDENCE_THRESHOLD = 0.75 # Softmax probability threshold
+SEQUENCE_LENGTH = 30                 # ST-GCN temporal frame buffer size
+POST_REP_FEEDBACK_FRAMES = 40        # Feedback display duration post-rep
 
 
 class LyingLegRaiseTracker:
@@ -95,17 +95,49 @@ class LyingLegRaiseTracker:
                 self.interpreter.allocate_tensors()
                 self.input_details = self.interpreter.get_input_details()
                 self.output_details = self.interpreter.get_output_details()
-            except Exception:
+            except Exception as exc:
+                print(
+                    f"[LYING LEG RAISE ERROR] __init__ model_path={model_path} | error={exc}",
+                    flush=True,
+                )
                 self.interpreter = None
 
     def _extract_body_keypoints(self, landmarks):
-        target_indices = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
-        coords = []
-        for idx in target_indices:
-            coords.append([landmarks[idx].x, landmarks[idx].y, landmarks[idx].z])
-        while len(coords) < 25:
-            coords.append([0.0, 0.0, 0.0])
-        return np.array(coords, dtype=np.float32)
+        """Maps MediaPipe 33 landmarks to the NTU-25 skeleton layout."""
+        ntu = np.zeros((25, 3), dtype=np.float32)
+
+        def xyz(idx):
+            lm = landmarks[idx]
+            return np.array([lm.x, lm.y, lm.z], dtype=np.float32)
+
+        ntu[3] = xyz(0)    # Nose
+        ntu[4] = xyz(11)   # Left Shoulder
+        ntu[5] = xyz(13)   # Left Elbow
+        ntu[6] = xyz(15)   # Left Wrist
+        ntu[7] = xyz(19)   # Left Hand/Index
+        ntu[8] = xyz(12)   # Right Shoulder
+        ntu[9] = xyz(14)   # Right Elbow
+        ntu[10] = xyz(16)  # Right Wrist
+        ntu[11] = xyz(20)  # Right Hand/Index
+        ntu[12] = xyz(23)  # Left Hip
+        ntu[13] = xyz(25)  # Left Knee
+        ntu[14] = xyz(27)  # Left Ankle
+        ntu[15] = xyz(31)  # Left Foot
+        ntu[16] = xyz(24)  # Right Hip
+        ntu[17] = xyz(26)  # Right Knee
+        ntu[18] = xyz(28)  # Right Ankle
+        ntu[19] = xyz(32)  # Right Foot
+
+        ntu[0] = (ntu[12] + ntu[16]) / 2.0  # Base Spine (Mid-Hip)
+        ntu[2] = (ntu[4] + ntu[8]) / 2.0    # Spine Shoulder / Neck (Mid-Shoulder)
+        ntu[1] = (ntu[0] + ntu[2]) / 2.0    # Mid Spine
+        ntu[20] = ntu[2]                    # Chest
+
+        ntu[21] = xyz(17)  # Left Pinky
+        ntu[22] = xyz(21)  # Left Thumb
+        ntu[23] = xyz(18)  # Right Pinky
+        ntu[24] = xyz(22)  # Right Thumb
+        return ntu
 
     def _reset_rep_tracking(self):
         self.rep_started = False
@@ -176,7 +208,7 @@ class LyingLegRaiseTracker:
         shoulder_span_ratio = shoulder_span_x / torso_len
         is_side = shoulder_span_ratio < SETUP_MAX_SHOULDER_SPAN_RATIO
 
-        # Raw & smoothed angle of the near-camera leg relative to the torso line[cite: 7]
+        # Raw & smoothed angle of the near-camera leg relative to the torso line
         raw_raise_angle = 180.0 - calculate_angle(active_shoulder, active_hip, active_knee)
         if self.smoothed_raise_angle is None:
             self.smoothed_raise_angle = raw_raise_angle
@@ -257,14 +289,19 @@ class LyingLegRaiseTracker:
 
         if self.interpreter and len(self.frame_buffer) == self.sequence_length and self.rep_started:
             try:
-                seq = np.expand_dims(np.array(self.frame_buffer, dtype=np.float32), axis=0)
+                buf_tvc = np.array(self.frame_buffer, dtype=np.float32)
+                expected_shape = self.input_details[0]['shape']
+                if len(expected_shape) == 5:
+                    seq = np.transpose(buf_tvc, (2, 0, 1))[None, :, :, :, None]
+                elif len(expected_shape) == 4 and tuple(expected_shape[1:]) == (buf_tvc.shape[2], buf_tvc.shape[0], buf_tvc.shape[1]):
+                    seq = np.transpose(buf_tvc, (2, 0, 1))[None, :, :, :]
+                else:
+                    seq = np.expand_dims(buf_tvc, axis=0)
+
                 self.interpreter.set_tensor(self.input_details[0]['index'], seq)
                 self.interpreter.invoke()
-                out = self.interpreter.get_tensor(self.output_details[0]['index'])[0]
-
-                exp_scores = np.exp(out - np.max(out))
-                probs = exp_scores / np.sum(exp_scores)
-                bad_posture_prob = probs[0]
+                probs = self.interpreter.get_tensor(self.output_details[0]['index'])[0]
+                bad_posture_prob = float(probs[0])
 
                 if bad_posture_prob >= ML_FAULT_CONFIDENCE_THRESHOLD and self.state not in ["RESTING", "WAITING", "LOCKED_FAULT"]:
                     self.ml_fault_frames += 1
@@ -274,8 +311,12 @@ class LyingLegRaiseTracker:
                         self.ml_posture_maintained = False
                 else:
                     self.ml_fault_frames = max(0, self.ml_fault_frames - 1)
-            except Exception:
-                pass
+            except Exception as exc:
+                expected_shape = self.input_details[0]['shape'] if hasattr(self, "input_details") else None
+                print(
+                    f"[LYING LEG RAISE ERROR] process_frame: expected_shape={expected_shape} | error={exc}",
+                    flush=True,
+                )
 
         # ---------------------------------------------------------
         # 3. KINEMATIC FORM TRIPWIRES

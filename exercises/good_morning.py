@@ -47,7 +47,7 @@ DEBOUNCE_DROP = 2                    # Frames before flagging fast/uncontrolled 
 DEBOUNCE_HALF_REP = 3                # Frames before flagging premature upward reversal
 
 # 6. ST-GCN Machine Learning Model Sensitivity
-ML_FAULT_CONFIDENCE_THRESHOLD = 0.75 # Required probability (>= 75%) before considering ML breakdown
+ML_FAULT_CONFIDENCE_THRESHOLD = 0.90 # Required probability (>= 75%) before considering ML breakdown
 DEBOUNCE_ML_FAULT = 5                # Consecutive frames required above threshold to trip ML fault
 
 # 7. Model & Buffer Settings
@@ -109,18 +109,49 @@ class GoodMorningTracker:
                 self.interpreter.allocate_tensors()
                 self.input_details = self.interpreter.get_input_details()
                 self.output_details = self.interpreter.get_output_details()
-            except Exception:
+            except Exception as exc:
+                print(
+                    f"[GOOD MORNING ERROR] __init__ model_path={model_path} | error={exc}",
+                    flush=True,
+                )
                 self.interpreter = None
 
     def _extract_body_keypoints(self, landmarks):
-        target_indices = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
-        coords = []
-        for idx in target_indices:
+        """Maps MediaPipe 33 landmarks to the NTU-25 skeleton layout."""
+        ntu = np.zeros((25, 3), dtype=np.float32)
+
+        def xyz(idx):
             lm = landmarks[idx]
-            coords.append([lm.x, lm.y, lm.z])
-        while len(coords) < 25:
-            coords.append([0.0, 0.0, 0.0])
-        return np.array(coords, dtype=np.float32)
+            return np.array([lm.x, lm.y, lm.z], dtype=np.float32)
+
+        ntu[3] = xyz(0)    # Nose
+        ntu[4] = xyz(11)   # Left Shoulder
+        ntu[5] = xyz(13)   # Left Elbow
+        ntu[6] = xyz(15)   # Left Wrist
+        ntu[7] = xyz(19)   # Left Hand/Index
+        ntu[8] = xyz(12)   # Right Shoulder
+        ntu[9] = xyz(14)   # Right Elbow
+        ntu[10] = xyz(16)  # Right Wrist
+        ntu[11] = xyz(20)  # Right Hand/Index
+        ntu[12] = xyz(23)  # Left Hip
+        ntu[13] = xyz(25)  # Left Knee
+        ntu[14] = xyz(27)  # Left Ankle
+        ntu[15] = xyz(31)  # Left Foot
+        ntu[16] = xyz(24)  # Right Hip
+        ntu[17] = xyz(26)  # Right Knee
+        ntu[18] = xyz(28)  # Right Ankle
+        ntu[19] = xyz(32)  # Right Foot
+
+        ntu[0] = (ntu[12] + ntu[16]) / 2.0  # Base Spine (Mid-Hip)
+        ntu[2] = (ntu[4] + ntu[8]) / 2.0    # Spine Shoulder / Neck (Mid-Shoulder)
+        ntu[1] = (ntu[0] + ntu[2]) / 2.0    # Mid Spine
+        ntu[20] = ntu[2]                    # Chest
+
+        ntu[21] = xyz(17)  # Left Pinky
+        ntu[22] = xyz(21)  # Left Thumb
+        ntu[23] = xyz(18)  # Right Pinky
+        ntu[24] = xyz(22)  # Right Thumb
+        return ntu
 
     def _reset_rep_tracking(self):
         self.rep_started = False
@@ -271,14 +302,19 @@ class GoodMorningTracker:
 
         if self.interpreter and len(self.frame_buffer) == self.sequence_length and self.rep_started:
             try:
-                seq = np.expand_dims(np.array(self.frame_buffer, dtype=np.float32), axis=0)
+                buf_tvc = np.array(self.frame_buffer, dtype=np.float32)
+                expected_shape = self.input_details[0]['shape']
+                if len(expected_shape) == 5:
+                    seq = np.transpose(buf_tvc, (2, 0, 1))[None, :, :, :, None]
+                elif len(expected_shape) == 4 and tuple(expected_shape[1:]) == (buf_tvc.shape[2], buf_tvc.shape[0], buf_tvc.shape[1]):
+                    seq = np.transpose(buf_tvc, (2, 0, 1))[None, :, :, :]
+                else:
+                    seq = np.expand_dims(buf_tvc, axis=0)
+
                 self.interpreter.set_tensor(self.input_details[0]['index'], seq)
                 self.interpreter.invoke()
-                out = self.interpreter.get_tensor(self.output_details[0]['index'])[0]
-
-                exp_scores = np.exp(out - np.max(out))
-                probs = exp_scores / np.sum(exp_scores)
-                bad_posture_prob = probs[0]
+                probs = self.interpreter.get_tensor(self.output_details[0]['index'])[0]
+                bad_posture_prob = float(probs[0])
 
                 if bad_posture_prob >= ML_FAULT_CONFIDENCE_THRESHOLD and self.state not in ["STANDING", "WAITING", "LOCKED_FAULT"]:
                     self.ml_fault_frames += 1
@@ -292,8 +328,12 @@ class GoodMorningTracker:
                         self.ml_posture_maintained = False
                 else:
                     self.ml_fault_frames = max(0, self.ml_fault_frames - 1)
-            except Exception:
-                pass
+            except Exception as exc:
+                expected_shape = self.input_details[0]['shape'] if hasattr(self, "input_details") else None
+                print(
+                    f"[GOOD MORNING ERROR] process_frame: expected_shape={expected_shape} | error={exc}",
+                    flush=True,
+                )
 
         # ---------------------------------------------------------
         # 3. KINEMATIC FORM TRIPWIRES
